@@ -48,6 +48,9 @@ coverage.xml
 # Bundled assets - track the PSR shortcut, ignore everything else binary
 !assets/psr_fallback/Steps Recorder.lnk
 
+# Original Hebrew-named source folder - content is copied to assets/psr_fallback/
+מקליט שלבים/
+
 # OS noise
 .DS_Store
 Thumbs.db
