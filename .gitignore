@@ -1,0 +1,68 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+
+# Distribution and build artifacts
+dist/
+build/
+*.egg-info/
+*.egg
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# pip editable install metadata
+*.dist-info/
+pip-wheel-metadata/
+
+# Environment files - never commit real secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+
+# PSR test output and temporary recording ZIPs
+*.zip
+psr_output/
+tmp/
+temp/
+_output/
+*_output/
+
+# pytest and coverage
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+*.lcov
+
+# Bundled assets - track the PSR shortcut, ignore everything else binary
+!assets/psr_fallback/Steps Recorder.lnk
+
+# OS noise
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor metadata
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+*~
+
+# Jupyter
+.ipynb_checkpoints/
+
+# MyPy
+.mypy_cache/
+.dmypy.json

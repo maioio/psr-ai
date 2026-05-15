@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "psr-ai"
+version = "0.1.0"
+description = "AI-native CLI wrapper for Windows Steps Recorder (PSR.exe)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["psr", "windows", "screenshot", "ai-agent", "workflow", "mht"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Documentation",
+    "Topic :: Utilities",
+]
+
+# Runtime dependencies: only click is required.
+# Pillow is optional - needed only for GIF generation (sa pub --gif).
+dependencies = [
+    "click>=8.1",
+]
+
+[project.optional-dependencies]
+gif = ["Pillow>=10.0"]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "Pillow>=10.0",
+]
+
+[project.scripts]
+sa = "psr_ai.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/[github-user]/psr-ai"
+Issues   = "https://github.com/[github-user]/psr-ai/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts   = "-v --tb=short"
+
+[tool.coverage.run]
+source = ["src/psr_ai"]
+omit   = ["tests/*"]

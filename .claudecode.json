@@ -1,0 +1,44 @@
+{
+  "project": {
+    "name": "PSR.ai (StepAnalyzer)",
+    "description": "AI-native CLI wrapper for Windows Steps Recorder. Wraps PSR.exe, parses MHT/ZIP output, generates Markdown and GIF documentation, and publishes to GitHub.",
+    "version": "0.1.0",
+    "language": "python",
+    "python_version": "3.14",
+    "entrypoint": "sa",
+    "package_root": "src/psr_ai"
+  },
+  "architecture": {
+    "style": "Hybrid D - src/ layout with flat core/",
+    "cli_framework": "click",
+    "module_map": {
+      "cli.py": "Command definitions: sa start, sa stop, sa pub",
+      "core/recorder.py": "PSR.exe process control and fallback path resolver",
+      "core/parser.py": "ZIP auto-detect, MHT boundary parsing, Base64-PNG extraction",
+      "core/generator.py": "Markdown timeline builder and optional GIF assembler",
+      "core/publisher.py": "GitHub API push and local docs output",
+      "utils/encoding.py": "Charset detection - binary-mode MHT read with UTF-8-sig fallback",
+      "utils/paths.py": "safe_path helper and pathlib-only path operations"
+    }
+  },
+  "key_pitfalls": [
+    "Pitfall 1 - MHT files may use Windows-1252 or missing charset headers: always read in binary mode",
+    "Pitfall 2 - Pillow GIF generation is memory-heavy at full res: resize to max 1280px before assembling",
+    "Pitfall 3 - psr.exe may be absent from PATH on Windows 11: use 3-tier fallback resolver",
+    "Pitfall 4 - PSR output is a ZIP wrapping the MHT, not raw MHT: auto-unzip transparently",
+    "Pitfall 5 - Scripts/ dir often missing from PATH after pip install: print session fix on first run"
+  ],
+  "commands": {
+    "install_dev": "pip install -e .[dev]",
+    "run_tests": "pytest",
+    "check_entrypoint": "sa --help",
+    "path_fix_powershell": "$env:PATH += ';[Scripts path]'"
+  },
+  "constraints": [
+    "Windows-only: PSR.exe is a Windows-exclusive binary",
+    "Zero em dashes in comments, docstrings, or markdown",
+    "GIF generation is opt-in only (requires Pillow extra)",
+    "All file operations must use pathlib.Path - no string path concatenation",
+    "Never commit .env, *.zip test fixtures, or tmp/ output dirs"
+  ]
+}
