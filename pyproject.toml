@@ -44,8 +44,8 @@ dev = [
 sa = "psr_ai.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/[github-user]/psr-ai"
-Issues   = "https://github.com/[github-user]/psr-ai/issues"
+Homepage = "https://github.com/maioio/psr-ai"
+Issues   = "https://github.com/maioio/psr-ai/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]

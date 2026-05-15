@@ -154,3 +154,5 @@ MIT
 ---
 
 *PSR.ai is not affiliated with Microsoft. Windows Steps Recorder is a Microsoft product.*
+
+<!-- GitHub: https://github.com/maioio/psr-ai -->
