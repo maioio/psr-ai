@@ -1,28 +1,30 @@
 # PSR Fallback Asset
 
-This directory ships a Windows shortcut (`Steps Recorder.lnk`) that points to
-`%windir%\system32\psr.exe` - the built-in Windows Steps Recorder executable.
+This directory ships `psr_shortcut.lnk` - a Windows shortcut that points to
+`%windir%\system32\psr.exe`, the built-in Windows Steps Recorder executable.
 
 ## Purpose
 
-PSR.ai uses a 4-tier resolver to locate `psr.exe` at runtime:
+`recorder.py` uses a 3-tier resolver to locate `psr.exe` at runtime:
 
 | Tier | Source | Notes |
 |---:|---|---|
-| 1 | `PATH` lookup via `shutil.which("psr")` | Standard; works on most machines |
-| 2 | `C:\Windows\System32\psr.exe` | Direct absolute path |
-| 3 | `C:\Windows\SysWOW64\psr.exe` | 32-bit layer on 64-bit Windows |
-| 4 | This `.lnk` shortcut (bundled) | Last resort for locked-down enterprise environments |
+| 1 | `%SystemRoot%\System32\psr.exe` | Primary absolute path - works on all standard Windows installs |
+| 2 | `%WinDir%\System32\psr.exe` | Secondary env-var path - handles non-standard SystemRoot configs |
+| 3 | `psr_shortcut.lnk` (this file) | Last resort for locked-down enterprise environments |
 
-## How it works
+A PATH lookup via `shutil.which("psr")` is attempted before all three tiers
+as a fast-path for machines where the Scripts directory is correctly configured.
+
+## How the .lnk fallback works
 
 Windows resolves `.lnk` files through its Shell subsystem. When `recorder.py`
-detects that the resolved path has a `.lnk` extension, it sets `shell=True` on
-the `subprocess.Popen` call so the OS Shell handles the shortcut lookup itself.
+detects that the resolved path ends in `.lnk`, it sets `shell=True` on the
+`subprocess.Popen` call so the OS Shell handles the shortcut resolution.
 
-## Note
+## Important note
 
-This shortcut does NOT embed or redistribute `psr.exe`. It is simply a pointer
+`psr_shortcut.lnk` does NOT embed or redistribute `psr.exe`. It is a pointer
 to the copy that Windows already installs at `%windir%\system32\psr.exe`.
-If that file is absent (e.g. stripped by Group Policy), Tier 4 will also fail
-and `PSRNotFoundError` will be raised with a clear diagnostic message.
+If that file is absent (for example, stripped by Group Policy), Tier 3 will
+also fail and `PSRNotFoundError` will be raised with a clear diagnostic message.

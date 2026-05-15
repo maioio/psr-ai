@@ -45,11 +45,8 @@ htmlcov/
 coverage.xml
 *.lcov
 
-# Bundled assets - track the PSR shortcut, ignore everything else binary
-!assets/psr_fallback/Steps Recorder.lnk
-
-# Original Hebrew-named source folder - content is copied to assets/psr_fallback/
-מקליט שלבים/
+# Bundled assets - track only the PSR shortcut, ignore everything else binary
+!assets/psr_fallback/psr_shortcut.lnk
 
 # OS noise
 .DS_Store
