@@ -149,22 +149,39 @@ class MarkdownGenerator:
     def _render_ai_block(self, steps: list[dict], title: str, source: str) -> str:
         """Build the dense AI context block.
 
-        Each line uses the format:
-          STEP N | TIMESTAMP | PROGRAM | ACTION
-        This lets an LLM read the full session history in minimum tokens.
+        Consecutive repetitive steps (scrolling, typing, etc.) within the same
+        program and within _MERGE_THRESHOLD_SECONDS are collapsed into a single
+        summary line to minimise token cost when pasting into an LLM.
+
+        Line formats:
+          STEP NNN | TIMESTAMP | PROGRAM | ACTION | screenshot:yes/no
+          [Steps N-M] | TIMESTAMP | PROGRAM | SUMMARY | screenshot:yes/no
         """
         if not steps:
             summary_lines = f"No steps recorded. Source: {source}\n"
         else:
-            lines = [f"Session: {title} | Source: {source} | Steps: {len(steps)}"]
-            for s in steps:
+            merged = merge_consecutive_steps(steps)
+            raw_count = len(steps)
+            merged_count = len(merged)
+            header_note = ""
+            if merged_count < raw_count:
+                header_note = f" (merged to {merged_count} entries)"
+            lines = [
+                f"Session: {title} | Source: {source} | Steps: {raw_count}{header_note}"
+            ]
+            for s in merged:
                 ts = s.get("timestamp") or "?"
                 prog = s.get("program") or "?"
                 action = s.get("action_text") or s.get("label") or "?"
                 raw_ss = s.get("screenshot", "")
                 screenshot = "yes" if raw_ss and _safe_relative(raw_ss) else "no"
+                step_range = s.get("_merged_range")
+                if step_range:
+                    step_label = f"[Steps {step_range}]"
+                else:
+                    step_label = f"STEP {s['index']:03d}"
                 lines.append(
-                    f"STEP {s['index']:03d} | {ts} | {prog} | {action} | screenshot:{screenshot}"
+                    f"{step_label} | {ts} | {prog} | {action} | screenshot:{screenshot}"
                 )
             summary_lines = "\n".join(lines) + "\n"
 
@@ -522,12 +539,146 @@ def _safe_relative(rel: str) -> str:
     the output directory.
     """
     import posixpath
-    # Normalise to forward slashes first.
     normalised = rel.replace("\\", "/")
-    # posixpath.normpath collapses '..' but keeps the path relative.
     clean = posixpath.normpath(normalised)
-    # Strip any leading '/' or '..' that survived normalisation.
     clean = clean.lstrip("/")
     if clean.startswith(".."):
         return ""
     return clean
+
+
+# ---------------------------------------------------------------------------
+# Step merging: token-cost optimisation for the AI context block
+# ---------------------------------------------------------------------------
+
+# Actions whose text is considered "repetitive" for merge purposes.
+# A step is repetitive when its action_text starts with one of these prefixes
+# (case-insensitive) AND consecutive steps share the same program.
+_REPETITIVE_PREFIXES = (
+    "scroll",
+    "type",
+    "key",
+    "press",
+    "input",
+    "mouse move",
+    "move mouse",
+)
+
+# Maximum seconds between two consecutive steps for them to be considered
+# "continuous" and eligible for merging.
+_MERGE_THRESHOLD_SECONDS = 5
+
+
+def merge_consecutive_steps(steps: list[dict]) -> list[dict]:
+    """Merge runs of repetitive, same-program steps into summary entries.
+
+    Two consecutive steps are eligible to merge when:
+      - They share the same program name.
+      - Both have action_text that starts with the same repetitive prefix.
+      - Their timestamps are within _MERGE_THRESHOLD_SECONDS of each other
+        (or either timestamp is absent/unparseable - absence is treated as
+        "close enough" so robustness is preserved).
+
+    The merged entry uses the format:
+      [Steps N-M] | <first_timestamp> | <program> | <summary> | screenshot:<last>
+
+    This is stored in a synthetic dict with the same keys as a normal step so
+    callers do not need special handling.
+
+    Steps that are not part of a repetitive run pass through unchanged.
+    """
+    if not steps:
+        return []
+
+    merged: list[dict] = []
+    run: list[dict] = [steps[0]]
+
+    for step in steps[1:]:
+        prev = run[-1]
+        if _should_merge(prev, step):
+            run.append(step)
+        else:
+            merged.append(_collapse_run(run))
+            run = [step]
+
+    merged.append(_collapse_run(run))
+    return merged
+
+
+def _should_merge(a: dict, b: dict) -> bool:
+    """Return True when b should be merged into the same run as a."""
+    prog_a = (a.get("program") or "").strip().lower()
+    prog_b = (b.get("program") or "").strip().lower()
+    if prog_a != prog_b:
+        return False
+
+    action_a = (a.get("action_text") or a.get("label") or "").lower()
+    action_b = (b.get("action_text") or b.get("label") or "").lower()
+
+    prefix_a = _repetitive_prefix(action_a)
+    prefix_b = _repetitive_prefix(action_b)
+
+    if prefix_a is None or prefix_b is None or prefix_a != prefix_b:
+        return False
+
+    return _within_threshold(a.get("timestamp"), b.get("timestamp"))
+
+
+def _repetitive_prefix(action: str) -> str | None:
+    """Return the matching prefix if action is repetitive, else None."""
+    for prefix in _REPETITIVE_PREFIXES:
+        if action.startswith(prefix):
+            return prefix
+    return None
+
+
+def _within_threshold(ts_a: str | None, ts_b: str | None) -> bool:
+    """Return True when two timestamp strings are within _MERGE_THRESHOLD_SECONDS.
+
+    Supports the PSR timestamp format: "M/D/YYYY H:MM:SS AM/PM".
+    If either timestamp is absent or unparseable, returns True (permissive).
+    """
+    if not ts_a or not ts_b:
+        return True
+    try:
+        from datetime import datetime as _dt
+        fmt = "%m/%d/%Y %I:%M:%S %p"
+        t_a = _dt.strptime(ts_a.strip(), fmt)
+        t_b = _dt.strptime(ts_b.strip(), fmt)
+        return abs((t_b - t_a).total_seconds()) <= _MERGE_THRESHOLD_SECONDS
+    except ValueError:
+        return True
+
+
+def _collapse_run(run: list[dict]) -> dict:
+    """Collapse a run of steps into one summary dict."""
+    if len(run) == 1:
+        return run[0]
+
+    first = run[0]
+    last = run[-1]
+    n = first.get("index", 0)
+    m = last.get("index", n + len(run) - 1)
+
+    prog = first.get("program") or "?"
+    action = first.get("action_text") or first.get("label") or "?"
+    prefix = _repetitive_prefix(action.lower())
+    if prefix == "scroll":
+        summary = f"Continuous scrolling ({len(run)} steps)"
+    elif prefix in ("type", "key", "press", "input"):
+        summary = f"Continuous text input ({len(run)} steps)"
+    else:
+        summary = f"Repeated action: {action} ({len(run)} steps)"
+
+    has_screenshot = any(s.get("screenshot") for s in run)
+
+    return {
+        "index": n,
+        "_merged_range": f"{n}-{m}",
+        "label": summary,
+        "timestamp": first.get("timestamp", ""),
+        "ui_element": first.get("ui_element", ""),
+        "program": prog,
+        "action_text": summary,
+        "screenshot": last.get("screenshot", "") if has_screenshot else "",
+    }
