@@ -9,7 +9,7 @@ import click
 from psr_ai import __version__
 from psr_ai.core.recorder import PSRNotFoundError, Recorder
 from psr_ai.core.parser import parse_session, generate_json_meta
-from psr_ai.core.generator import MarkdownGenerator, generate_markdown, generate_gif
+from psr_ai.core.generator import GifGenerator, MarkdownGenerator, generate_markdown, generate_gif
 from psr_ai.core.publisher import publish
 from psr_ai.utils.paths import default_output_dir
 
@@ -61,11 +61,19 @@ def start(output: str | None, maxsc: int) -> None:
 # ------------------------------------------------------------------
 
 @main.command()
-def stop() -> None:
+@click.option(
+    "--no-gif",
+    "skip_gif",
+    is_flag=True,
+    default=False,
+    help="Skip GIF generation and produce only data.json and report.md.",
+)
+def stop(skip_gif: bool) -> None:
     """Stop the active PSR recording session and save the ZIP.
 
     Waits for PSR to finish writing the file before returning.
-    After saving, automatically parses the ZIP and extracts step data.
+    After saving, automatically parses the ZIP, renders report.md,
+    and builds action_replay.gif (pass --no-gif to skip the GIF).
     """
     try:
         recorder = Recorder()
@@ -77,21 +85,26 @@ def stop() -> None:
 
     if zip_path is not None and zip_path.exists():
         size_kb = zip_path.stat().st_size // 1024
-        click.echo(f"Recording stopped.")
+        click.echo("Recording stopped.")
         click.echo(f"  File: {zip_path}")
         click.echo(f"  Size: {size_kb} KB")
 
-        # Auto-parse: extract steps, dump data.json, render report.md.
+        # Auto-parse: extract steps, dump data.json, render report.md, build GIF.
         try:
             session = parse_session(zip_path)
             output_dir = default_output_dir(zip_path)
             json_path = generate_json_meta(session, output_dir / "data.json")
             report_path = MarkdownGenerator(json_path).write(output_dir)
             screenshots_dir = output_dir / "screenshots"
+
             click.echo(f"  Parsed:      {len(session.steps)} steps extracted")
             click.echo(f"  Data:        {json_path}")
             click.echo(f"  Screenshots: {screenshots_dir}")
             click.echo(f"  Report:      {report_path}")
+
+            if not skip_gif:
+                _build_gif_for_stop(session, output_dir, json_path)
+
         except Exception as exc:
             click.echo(
                 f"  Warning: auto-parse failed ({exc}). The ZIP was saved successfully.",
@@ -101,6 +114,25 @@ def stop() -> None:
     else:
         click.echo("Recording stopped.")
         click.echo("  Note: output file not found - PSR may have exited before saving.")
+
+
+def _build_gif_for_stop(session, output_dir: Path, json_path: Path) -> None:
+    """Build action_replay.gif and print status. Called only from sa stop."""
+    try:
+        gif_gen = GifGenerator(
+            data_json_path=json_path,
+            screenshots_dir=output_dir / "screenshots",
+        )
+        gif_path = gif_gen.write(output_dir)
+        click.echo(f"  GIF:         {gif_path}")
+    except ImportError:
+        click.echo(
+            "  GIF skipped: Pillow not installed. Run: pip install psr-ai[gif]",
+            err=True,
+        )
+    except ValueError as exc:
+        # No frames found - session had no screenshots. Non-fatal.
+        click.echo(f"  GIF skipped: {exc}", err=True)
 
 
 # ------------------------------------------------------------------
