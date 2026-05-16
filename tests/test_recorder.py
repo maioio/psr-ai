@@ -8,7 +8,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from psr_ai.core.recorder import PSRNotFoundError, Recorder, _BUNDLED_LNK
+from psr_ai.core.recorder import (
+    PSRNotFoundError,
+    Recorder,
+    _BUNDLED_LNK,
+    _resolve_bundled_asset_dir,
+)
 
 
 # ------------------------------------------------------------------
@@ -63,6 +68,80 @@ def test_bundled_lnk_path_exists():
         f"Bundled shortcut not found at {_BUNDLED_LNK}. "
         "Run: git lfs pull  or check assets/psr_fallback/."
     )
+
+
+def test_resolve_falls_through_to_bundled_exe_when_system_psr_absent(tmp_path):
+    """Tier 3a: when system PSR is missing, use bundled psr.exe if present."""
+    fake_bundled_exe = tmp_path / "psr.exe"
+    fake_bundled_exe.touch()
+
+    with (
+        patch("psr_ai.core.recorder.shutil.which", return_value=None),
+        patch("psr_ai.core.recorder.resolve_env_path", side_effect=KeyError("no env")),
+        patch("psr_ai.core.recorder._resolve_bundled_asset_dir", return_value=tmp_path),
+    ):
+        r = Recorder()
+
+    assert r._psr_exe == fake_bundled_exe
+    assert r._psr_exe.suffix == ".exe"
+    assert r._use_shell is False
+
+
+def test_resolve_falls_through_to_bundled_lnk_when_exe_absent(tmp_path):
+    """Tier 3b: bundled .lnk used when no portable exe is present."""
+    fake_lnk = tmp_path / "psr_shortcut.lnk"
+    fake_lnk.touch()
+    # No psr.exe in tmp_path - only the .lnk.
+
+    with (
+        patch("psr_ai.core.recorder.shutil.which", return_value=None),
+        patch("psr_ai.core.recorder.resolve_env_path", side_effect=KeyError("no env")),
+        patch("psr_ai.core.recorder._resolve_bundled_asset_dir", return_value=tmp_path),
+    ):
+        r = Recorder()
+
+    assert r._psr_exe == fake_lnk
+    assert r._use_shell is True
+
+
+def test_error_message_contains_manual_steps_when_all_tiers_fail(tmp_path):
+    """PSRNotFoundError must include actionable recovery instructions."""
+    with (
+        patch("psr_ai.core.recorder.shutil.which", return_value=None),
+        patch("psr_ai.core.recorder.resolve_env_path", side_effect=KeyError("no env")),
+        patch("psr_ai.core.recorder._resolve_bundled_asset_dir", return_value=tmp_path),
+    ):
+        # tmp_path has neither psr.exe nor psr_shortcut.lnk.
+        with pytest.raises(PSRNotFoundError) as exc_info:
+            Recorder()
+
+    msg = str(exc_info.value)
+    assert "Option A" in msg
+    assert "Option B" in msg
+    assert "Option C" in msg
+    assert "gpedit.msc" in msg or "Group Policy" in msg
+
+
+def test_resolve_bundled_asset_dir_returns_a_path():
+    result = _resolve_bundled_asset_dir()
+    assert isinstance(result, Path)
+
+
+def test_bundled_exe_takes_priority_over_lnk(tmp_path):
+    """When both psr.exe and psr_shortcut.lnk exist, the .exe wins."""
+    fake_exe = tmp_path / "psr.exe"
+    fake_lnk = tmp_path / "psr_shortcut.lnk"
+    fake_exe.touch()
+    fake_lnk.touch()
+
+    with (
+        patch("psr_ai.core.recorder.shutil.which", return_value=None),
+        patch("psr_ai.core.recorder.resolve_env_path", side_effect=KeyError("no env")),
+        patch("psr_ai.core.recorder._resolve_bundled_asset_dir", return_value=tmp_path),
+    ):
+        r = Recorder()
+
+    assert r._psr_exe == fake_exe
 
 
 # ------------------------------------------------------------------
