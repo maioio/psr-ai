@@ -10,6 +10,7 @@ from psr_ai import __version__
 from psr_ai.core.recorder import PSRNotFoundError, Recorder
 from psr_ai.core.parser import parse_session, generate_json_meta
 from psr_ai.core.generator import GifGenerator, MarkdownGenerator, generate_markdown, generate_gif
+from psr_ai.core.reviewer import run_review_session
 from psr_ai.core.publisher import Publisher, PublishError, publish_via_github_api
 from psr_ai.utils.paths import default_output_dir
 
@@ -155,6 +156,49 @@ def status() -> None:
     else:
         click.echo("Status: IDLE")
         click.echo("  No active recording. Use `sa start` to begin.")
+
+
+# ------------------------------------------------------------------
+# sa review
+# ------------------------------------------------------------------
+
+@main.command()
+@click.argument("source_dir", type=click.Path(exists=True, file_okay=False))
+@click.option(
+    "--no-regen",
+    "skip_regen",
+    is_flag=True,
+    default=False,
+    help="Skip re-generating report.md after the review.",
+)
+def review(source_dir: str, skip_regen: bool) -> None:
+    """Interactively review session steps and drop sensitive data.
+
+    SOURCE_DIR is the output directory produced by `sa stop`
+    (must contain data.json and a screenshots/ subdirectory).
+
+    For each step you will see the timestamp, program name, and action text.
+    Press Enter or K to keep the step, D to drop it.
+    Dropped steps are immediately purged from data.json and their PNG
+    screenshots are deleted from disk before any report or GIF is generated.
+
+    Example:
+      sa review psr_output\\psr_20240115_143000_output
+    """
+    try:
+        kept, dropped = run_review_session(
+            Path(source_dir),
+            regenerate=not skip_regen,
+        )
+    except FileNotFoundError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+
+    click.echo(f"\nSummary: {kept} steps kept, {dropped} steps dropped.")
+    if dropped > 0:
+        click.echo(
+            "Run `sa pub <source_dir>` to publish the privacy-reviewed session."
+        )
 
 
 # ------------------------------------------------------------------
