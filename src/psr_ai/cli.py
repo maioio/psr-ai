@@ -9,7 +9,7 @@ import click
 from psr_ai import __version__
 from psr_ai.core.recorder import PSRNotFoundError, Recorder
 from psr_ai.core.parser import parse_session, generate_json_meta
-from psr_ai.core.generator import generate_markdown, generate_gif
+from psr_ai.core.generator import MarkdownGenerator, generate_markdown, generate_gif
 from psr_ai.core.publisher import publish
 from psr_ai.utils.paths import default_output_dir
 
@@ -81,19 +81,23 @@ def stop() -> None:
         click.echo(f"  File: {zip_path}")
         click.echo(f"  Size: {size_kb} KB")
 
-        # Auto-parse: extract steps and generate JSON metadata.
+        # Auto-parse: extract steps, dump data.json, render report.md.
         try:
             session = parse_session(zip_path)
             output_dir = default_output_dir(zip_path)
             json_path = generate_json_meta(session, output_dir / "data.json")
+            report_path = MarkdownGenerator(json_path).write(output_dir)
             screenshots_dir = output_dir / "screenshots"
-            click.echo(f"  Parsed: {len(session.steps)} steps extracted")
-            click.echo(f"  Data:   {json_path}")
+            click.echo(f"  Parsed:      {len(session.steps)} steps extracted")
+            click.echo(f"  Data:        {json_path}")
             click.echo(f"  Screenshots: {screenshots_dir}")
-            click.echo(f"  Run `sa pub {zip_path}` to generate full Markdown documentation.")
+            click.echo(f"  Report:      {report_path}")
         except Exception as exc:
-            click.echo(f"  Warning: auto-parse failed ({exc}). The ZIP was saved successfully.", err=True)
-            click.echo(f"Run `sa pub {zip_path}` to generate documentation.")
+            click.echo(
+                f"  Warning: auto-parse failed ({exc}). The ZIP was saved successfully.",
+                err=True,
+            )
+            click.echo(f"  Run `sa pub {zip_path}` to generate documentation manually.")
     else:
         click.echo("Recording stopped.")
         click.echo("  Note: output file not found - PSR may have exited before saving.")
