@@ -10,7 +10,7 @@ from psr_ai import __version__
 from psr_ai.core.recorder import PSRNotFoundError, Recorder
 from psr_ai.core.parser import parse_session, generate_json_meta
 from psr_ai.core.generator import GifGenerator, MarkdownGenerator, generate_markdown, generate_gif
-from psr_ai.core.publisher import publish
+from psr_ai.core.publisher import Publisher, PublishError, publish_via_github_api
 from psr_ai.utils.paths import default_output_dir
 
 
@@ -50,7 +50,7 @@ def start(output: str | None, maxsc: int) -> None:
         raise SystemExit(1)
 
     out_path = recorder.start_recording(output_path=output, max_screenshots=maxsc)
-    click.echo(f"Recording started.")
+    click.echo("Recording started.")
     click.echo(f"  Output: {out_path}")
     click.echo(f"  Max screenshots: {maxsc}")
     click.echo("Run `sa stop` when finished.")
@@ -162,52 +162,127 @@ def status() -> None:
 # ------------------------------------------------------------------
 
 @main.command()
-@click.argument("zip_file", type=click.Path(exists=True))
+@click.argument("source_dir", type=click.Path(exists=True, file_okay=False))
 @click.option(
-    "--out-dir", "-d",
+    "--dest", "-d",
     default=None,
     type=click.Path(),
-    help="Directory for generated output. Defaults to a subfolder next to the ZIP.",
+    help="Root directory for published sessions. Defaults to ./docs/sessions/.",
 )
 @click.option(
-    "--gif",
+    "--git",
+    "use_git",
     is_flag=True,
     default=False,
-    help="Also generate an animated GIF (requires: pip install psr-ai[gif]).",
+    help="Commit and push the published assets using Git.",
 )
 @click.option(
-    "--publish", "do_publish",
+    "--message", "-m",
+    default=None,
+    help="Custom Git commit message. Defaults to an automated timestamped message.",
+)
+@click.option(
+    "--remote",
+    default="origin",
+    show_default=True,
+    help="Git remote to push to.",
+)
+@click.option(
+    "--branch",
+    default=None,
+    help="Branch to push to. Defaults to the current branch.",
+)
+@click.option(
+    "--github-api",
+    "use_github_api",
     is_flag=True,
     default=False,
-    help="Push the generated session.md to the configured GitHub repository.",
+    help=(
+        "Push report.md via the GitHub Contents API instead of local Git. "
+        "Requires GITHUB_TOKEN and GITHUB_REPO environment variables."
+    ),
 )
-def pub(zip_file: str, out_dir: str | None, gif: bool, do_publish: bool) -> None:
-    """Parse a PSR ZIP and publish Markdown documentation.
+def pub(
+    source_dir: str,
+    dest: str | None,
+    use_git: bool,
+    message: str | None,
+    remote: str,
+    branch: str | None,
+    use_github_api: bool,
+) -> None:
+    """Publish a session output directory to docs/ and optionally push to GitHub.
 
-    ZIP_FILE is the path to the .zip produced by `sa stop` or PSR directly.
+    SOURCE_DIR is the output directory produced by `sa stop`
+    (the folder containing report.md, data.json, action_replay.gif, screenshots/).
+
+    Examples:
+      sa pub psr_output/psr_20240115_143000_output
+      sa pub psr_output/psr_20240115_143000_output --git
+      sa pub psr_output/psr_20240115_143000_output --git --message "docs: weekly sync"
+      sa pub psr_output/psr_20240115_143000_output --github-api
     """
-    zip_path = Path(zip_file)
-    output_dir = Path(out_dir) if out_dir else default_output_dir(zip_path)
+    src = Path(source_dir)
+    dest_root = Path(dest) if dest else None
 
-    click.echo(f"Parsing: {zip_path.name}")
-    session = parse_session(zip_path)
-    click.echo(f"  Steps found: {len(session.steps)}")
+    publisher = Publisher(source_dir=src, dest_root=dest_root)
 
-    md_path = generate_markdown(session, output_dir)
-    click.echo(f"  Markdown: {md_path}")
+    # Step 1: copy assets.
+    click.echo(f"Publishing: {src.name}")
+    try:
+        copied_to = publisher.copy()
+    except OSError as exc:
+        click.echo(f"Error copying assets: {exc}", err=True)
+        raise SystemExit(1)
 
-    if gif:
+    click.echo(f"  Copied to:   {copied_to}")
+    _report_copied_assets(copied_to)
+
+    # Step 2: GitHub Contents API push (no local git needed).
+    if use_github_api:
+        click.echo("  Pushing via GitHub Contents API...")
         try:
-            gif_path = generate_gif(session, output_dir)
-            click.echo(f"  GIF: {gif_path}")
-        except ImportError:
+            html_url = publish_via_github_api(src)
+            click.echo(f"  Published:   {html_url}")
+        except PublishError as exc:
+            click.echo(f"  GitHub API error: {exc}", err=True)
+            raise SystemExit(1)
+        return
+
+    # Step 3: Local git commit + push.
+    if use_git:
+        if not publisher.is_git_repo():
             click.echo(
-                "  GIF skipped: Pillow not installed. Run: pip install psr-ai[gif]",
+                "  Git error: not inside a Git repository. "
+                "Run `git init` first or use --github-api.",
                 err=True,
             )
+            raise SystemExit(1)
+        click.echo("  Committing...")
+        try:
+            sha = publisher.commit_and_push(
+                dest=copied_to,
+                message=message,
+                remote=remote,
+                branch=branch,
+            )
+            click.echo(f"  Committed:   {sha[:12]}")
+            click.echo(f"  Pushed to:   {remote}" + (f"/{branch}" if branch else ""))
+        except PublishError as exc:
+            click.echo(f"  Git error: {exc}", err=True)
+            raise SystemExit(1)
+        return
 
-    if do_publish:
-        result = publish(output_dir)
-        click.echo(f"  Published: {result}")
-    else:
-        click.echo(f"Done. Output: {output_dir}")
+    click.echo("Done. Use --git to commit and push, or --github-api for the Contents API.")
+
+
+def _report_copied_assets(dest: Path) -> None:
+    """Print which files were copied to the destination directory."""
+    from psr_ai.core.publisher import _ASSET_FILES, _ASSET_DIRS
+    for name in _ASSET_FILES:
+        if (dest / name).exists():
+            click.echo(f"  + {name}")
+    for name in _ASSET_DIRS:
+        if (dest / name).is_dir():
+            count = sum(1 for _ in (dest / name).iterdir())
+            click.echo(f"  + {name}/ ({count} files)")
