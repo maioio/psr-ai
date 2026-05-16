@@ -246,51 +246,254 @@ def generate_markdown(session: RecordingSession, out_dir: Path) -> Path:
     return gen.write(out_dir)
 
 
-def generate_gif(session: RecordingSession, out_dir: Path, max_width: int = 1280) -> Path:
-    """Assemble an animated GIF from session screenshots.
+class GifGenerator:
+    """Assembles an animated GIF from session screenshots with cursor highlighting.
 
     Requires Pillow (pip install psr-ai[gif]).
-    Frames are resized to max_width to avoid the Pillow memory spike (Pitfall 2).
+
+    Pipeline per frame:
+      1. Open the screenshot as RGB.
+      2. Resize to max_width (default 1280 px) maintaining aspect ratio
+         to avoid the Pillow memory spike documented in Pitfall 2.
+      3. Draw a semi-transparent halo circle at the click coordinates when
+         the step data contains x/y cursor information.
+      4. Quantize to palette_colors (default 128) to keep file size small.
+
+    Usage:
+        gen = GifGenerator(data_json_path, screenshots_dir)
+        gif_path = gen.write(output_dir)
+    """
+
+    # Halo appearance constants.
+    _HALO_RADIUS = 18          # outer radius of the highlight ring in pixels
+    _HALO_INNER = 4            # solid centre dot radius
+    _HALO_COLOR = (220, 30, 30, 160)   # semi-transparent red (RGBA)
+    _HALO_RING_WIDTH = 3       # width of the outer ring stroke
+
+    def __init__(
+        self,
+        data_json_path: Path,
+        screenshots_dir: Path,
+        max_width: int = 1280,
+        palette_colors: int = 128,
+        frame_duration_ms: int = 1500,
+    ) -> None:
+        self._data_path = Path(data_json_path)
+        self._screenshots_dir = Path(screenshots_dir)
+        self._max_width = max_width
+        self._palette_colors = palette_colors
+        self._frame_duration_ms = frame_duration_ms
+        self._data: dict = json.loads(self._data_path.read_text(encoding="utf-8"))
+
+    def write(self, output_dir: Path, filename: str = "action_replay.gif") -> Path:
+        """Build the GIF and write it to output_dir/filename. Return its path."""
+        try:
+            from PIL import Image
+        except ImportError as exc:
+            raise ImportError(
+                "Pillow is required for GIF generation. "
+                "Install it with: pip install psr-ai[gif]"
+            ) from exc
+
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        steps = self._data.get("steps", [])
+        frames = []
+        for step in steps:
+            frame = self._build_frame(step, Image)
+            if frame is not None:
+                frames.append(frame)
+
+        if not frames:
+            raise ValueError(
+                f"No frames found in {self._screenshots_dir}. "
+                "Run the parser first to extract screenshots."
+            )
+
+        gif_path = output_dir / filename
+        frames[0].save(
+            gif_path,
+            save_all=True,
+            append_images=frames[1:],
+            duration=self._frame_duration_ms,
+            loop=0,
+            optimize=True,
+        )
+        return gif_path
+
+    # ------------------------------------------------------------------
+    # Frame construction
+    # ------------------------------------------------------------------
+
+    def _build_frame(self, step: dict, Image) -> "Image.Image | None":
+        """Load, resize, annotate, and quantize one screenshot frame.
+
+        Returns None if the screenshot file is missing for this step.
+        """
+        img_path = self._screenshots_dir / f"step_{step['index']:03d}.png"
+        if not img_path.exists():
+            return None
+
+        img = Image.open(img_path).convert("RGB")
+        img = _resize_proportional(img, self._max_width, Image)
+
+        # Draw cursor halo when click coordinates are present.
+        click_x = step.get("click_x")
+        click_y = step.get("click_y")
+        if click_x is not None and click_y is not None:
+            img = _draw_cursor_halo(
+                img,
+                click_x=int(click_x),
+                click_y=int(click_y),
+                original_width=Image.open(img_path).width,
+                scaled_width=img.width,
+                radius=self._HALO_RADIUS,
+                inner=self._HALO_INNER,
+                color=self._HALO_COLOR,
+                ring_width=self._HALO_RING_WIDTH,
+                Image=Image,
+            )
+
+        # Quantize to a fixed palette to keep file size and memory bounded.
+        return img.quantize(colors=self._palette_colors)
+
+
+# ---------------------------------------------------------------------------
+# Frame-level helpers (pure functions, fully testable in isolation)
+# ---------------------------------------------------------------------------
+
+def _resize_proportional(img, max_width: int, Image) -> "Image.Image":
+    """Resize img so its width does not exceed max_width, preserving aspect ratio.
+
+    Returns the original image unchanged if it is already within the limit.
+    Uses Image.LANCZOS for high-quality downsampling.
+    """
+    if img.width <= max_width:
+        return img
+    ratio = max_width / img.width
+    new_size = (max_width, int(img.height * ratio))
+    return img.resize(new_size, Image.LANCZOS)
+
+
+def _draw_cursor_halo(
+    img,
+    *,
+    click_x: int,
+    click_y: int,
+    original_width: int,
+    scaled_width: int,
+    radius: int,
+    inner: int,
+    color: tuple,
+    ring_width: int,
+    Image,
+) -> "Image.Image":
+    """Draw a semi-transparent halo ring and centre dot at the click position.
+
+    Coordinates from data.json are expressed in original-image pixels.
+    They are scaled proportionally to match the resized frame dimensions
+    before drawing, so the halo lands on the correct pixel regardless of
+    how much the image was shrunk.
+
+    The overlay is composited as RGBA so the background shows through the
+    semi-transparent fill, creating the halo effect without hiding content.
+    """
+    from PIL import ImageDraw
+
+    # Scale the click coordinates to match the resized frame.
+    scale = scaled_width / original_width if original_width > 0 else 1.0
+    sx = int(click_x * scale)
+    sy = int(click_y * scale)
+
+    # Clamp to image bounds so a coordinate at the edge never raises.
+    sx = max(0, min(sx, img.width - 1))
+    sy = max(0, min(sy, img.height - 1))
+
+    # Work in RGBA so the alpha channel enables transparency.
+    overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+
+    # Outer halo ring: a thick-stroked hollow circle.
+    r, ri = radius, ring_width
+    ring_bbox = [sx - r, sy - r, sx + r, sy + r]
+    # Clamp bounding box to prevent Pillow raising on out-of-bounds coords.
+    ring_bbox = _clamp_bbox(ring_bbox, img.width, img.height)
+    draw.ellipse(ring_bbox, outline=color, width=ri)
+
+    # Inner solid dot for precision.
+    dot_bbox = [sx - inner, sy - inner, sx + inner, sy + inner]
+    dot_bbox = _clamp_bbox(dot_bbox, img.width, img.height)
+    draw.ellipse(dot_bbox, fill=color)
+
+    # Composite the overlay onto the RGB image.
+    base = img.convert("RGBA")
+    composited = Image.alpha_composite(base, overlay)
+    return composited.convert("RGB")
+
+
+def _clamp_bbox(bbox: list[int], width: int, height: int) -> list[int]:
+    """Clamp a [x0, y0, x1, y1] bounding box to the image dimensions.
+
+    Pillow raises ValueError when ellipse bounding boxes fall entirely
+    outside the canvas. This guard prevents that on edge-case coordinates.
+    """
+    x0, y0, x1, y1 = bbox
+    x0 = max(0, min(x0, width - 1))
+    y0 = max(0, min(y0, height - 1))
+    x1 = max(0, min(x1, width - 1))
+    y1 = max(0, min(y1, height - 1))
+    # Ensure x1 > x0 and y1 > y0 so the bounding box is valid.
+    x1 = max(x1, x0 + 1)
+    y1 = max(y1, y0 + 1)
+    # Re-clamp after the min-size adjustment.
+    x1 = min(x1, width - 1)
+    y1 = min(y1, height - 1)
+    return [x0, y0, x1, y1]
+
+
+def generate_gif(
+    session: RecordingSession,
+    out_dir: Path,
+    max_width: int = 1280,
+    data_json_path: Path | None = None,
+) -> Path:
+    """Assemble an animated GIF from a RecordingSession.
+
+    Requires Pillow (pip install psr-ai[gif]).
+    Delegates to GifGenerator which handles resize, cursor halos, and
+    palette quantisation. Falls back to the screenshots/ directory
+    already written by generate_markdown or generate_json_meta.
+
+    data_json_path: path to an existing data.json.
+                    When None, a temporary one is generated from session.
     """
     try:
-        from PIL import Image
+        from PIL import Image as _PIL  # noqa: F401 - presence check only
     except ImportError as exc:
         raise ImportError(
             "Pillow is required for GIF generation. "
             "Install it with: pip install psr-ai[gif]"
         ) from exc
 
-    screenshots_dir = Path(out_dir) / "screenshots"
+    out_dir = Path(out_dir)
+    screenshots_dir = out_dir / "screenshots"
+
+    # Ensure screenshots exist on disk.
     if not screenshots_dir.exists():
         save_images(session, screenshots_dir)
 
-    frames: list[Image.Image] = []
-    for step in session.steps:
-        img_path = screenshots_dir / f"step_{step.index:03d}.png"
-        if not img_path.exists():
-            continue
-        frame = Image.open(img_path).convert("RGB")
-        # Resize proportionally to cap memory use.
-        if frame.width > max_width:
-            ratio = max_width / frame.width
-            new_size = (max_width, int(frame.height * ratio))
-            frame = frame.resize(new_size, Image.LANCZOS)
-        # 128 colors reduces GIF size 30-50% with minimal visual loss.
-        frames.append(frame.quantize(colors=128))
+    # Ensure data.json exists (GifGenerator reads click coords from it).
+    if data_json_path is None:
+        from psr_ai.core.parser import generate_json_meta
+        data_json_path = generate_json_meta(session, out_dir / "data.json")
 
-    if not frames:
-        raise ValueError("No frames found to build GIF.")
-
-    gif_path = Path(out_dir) / "session.gif"
-    frames[0].save(
-        gif_path,
-        save_all=True,
-        append_images=frames[1:],
-        duration=1500,
-        loop=0,
-        optimize=True,
+    gen = GifGenerator(
+        data_json_path=data_json_path,
+        screenshots_dir=screenshots_dir,
+        max_width=max_width,
     )
-    return gif_path
+    return gen.write(out_dir)
 
 
 # ---------------------------------------------------------------------------
