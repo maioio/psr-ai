@@ -66,3 +66,6 @@ desktop.ini
 # MyPy
 .mypy_cache/
 .dmypy.json
+
+# Claude Code workspace
+.claude/
