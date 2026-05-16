@@ -9,7 +9,7 @@ description = "AI-native CLI wrapper for Windows Steps Recorder (PSR.exe)"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-keywords = ["psr", "windows", "screenshot", "ai-agent", "workflow", "mht"]
+keywords = ["psr", "windows", "screenshot", "ai-agent", "workflow", "mht", "documentation"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
@@ -26,8 +26,8 @@ classifiers = [
     "Topic :: Utilities",
 ]
 
-# Runtime dependencies: only click is required.
-# Pillow is optional - needed only for GIF generation (sa pub --gif).
+# Runtime: only click is required.
+# Pillow is optional: needed for GIF generation (sa stop / sa pub --gif).
 dependencies = [
     "click>=8.1",
 ]
@@ -40,18 +40,33 @@ dev = [
     "Pillow>=10.0",
 ]
 
+# The `sa` console script maps directly to psr_ai.cli:main.
+# After `pip install -e .` on Windows, run:
+#   $env:PATH += ";$env:LOCALAPPDATA\Python\<version>\Scripts"
+# if `sa` is not found immediately after install.
 [project.scripts]
 sa = "psr_ai.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/maioio/psr-ai"
-Issues   = "https://github.com/maioio/psr-ai/issues"
+Homepage    = "https://github.com/maioio/psr-ai"
+Issues      = "https://github.com/maioio/psr-ai/issues"
+Source      = "https://github.com/maioio/psr-ai"
+Changelog   = "https://github.com/maioio/psr-ai/releases"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-dir]
 "" = "src"
+
+# Include the bundled PSR shortcut so it is present after pip install.
+[tool.setuptools.package-data]
+"psr_ai" = []
+
+[tool.setuptools.data-files]
+# Ship the fallback .lnk asset alongside the package.
+"psr_ai_assets" = ["assets/psr_fallback/psr_shortcut.lnk",
+                   "assets/psr_fallback/README.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
