@@ -15,6 +15,14 @@ from psr_ai.core.publisher import Publisher, PublishError, publish_via_github_ap
 from psr_ai.utils.paths import default_output_dir
 
 
+def _echo(msg: str) -> None:
+    """click.echo with a safe fallback for terminals that cannot encode Unicode paths."""
+    try:
+        click.echo(msg)
+    except UnicodeEncodeError:
+        click.echo(msg.encode("ascii", errors="replace").decode("ascii"))
+
+
 @click.group()
 @click.version_option(__version__, prog_name="sa")
 def main() -> None:
@@ -52,7 +60,7 @@ def start(output: str | None, maxsc: int) -> None:
 
     out_path = recorder.start_recording(output_path=output, max_screenshots=maxsc)
     click.echo("Recording started.")
-    click.echo(f"  Output: {out_path}")
+    _echo(f"  Output: {out_path}")
     click.echo(f"  Max screenshots: {maxsc}")
     click.echo("Run `sa stop` when finished.")
 
@@ -87,7 +95,7 @@ def stop(skip_gif: bool) -> None:
     if zip_path is not None and zip_path.exists():
         size_kb = zip_path.stat().st_size // 1024
         click.echo("Recording stopped.")
-        click.echo(f"  File: {zip_path}")
+        _echo(f"  File: {zip_path}")
         click.echo(f"  Size: {size_kb} KB")
 
         # Auto-parse: extract steps, dump data.json, render report.md, build GIF.
@@ -99,9 +107,9 @@ def stop(skip_gif: bool) -> None:
             screenshots_dir = output_dir / "screenshots"
 
             click.echo(f"  Parsed:      {len(session.steps)} steps extracted")
-            click.echo(f"  Data:        {json_path}")
-            click.echo(f"  Screenshots: {screenshots_dir}")
-            click.echo(f"  Report:      {report_path}")
+            _echo(f"  Data:        {json_path}")
+            _echo(f"  Screenshots: {screenshots_dir}")
+            _echo(f"  Report:      {report_path}")
 
             if not skip_gif:
                 _build_gif_for_stop(session, output_dir, json_path)
@@ -111,7 +119,7 @@ def stop(skip_gif: bool) -> None:
                 f"  Warning: auto-parse failed ({exc}). The ZIP was saved successfully.",
                 err=True,
             )
-            click.echo(f"  Run `sa pub {zip_path}` to generate documentation manually.")
+            _echo(f"  Run `sa pub {zip_path}` to generate documentation manually.")
     else:
         click.echo("Recording stopped.")
         click.echo("  Note: output file not found - PSR may have exited before saving.")
@@ -125,7 +133,7 @@ def _build_gif_for_stop(session, output_dir: Path, json_path: Path) -> None:
             screenshots_dir=output_dir / "screenshots",
         )
         gif_path = gif_gen.write(output_dir)
-        click.echo(f"  GIF:         {gif_path}")
+        _echo(f"  GIF:         {gif_path}")
     except ImportError:
         click.echo(
             "  GIF skipped: Pillow not installed. Run: pip install psr-ai[gif]",
@@ -279,7 +287,7 @@ def pub(
         click.echo(f"Error copying assets: {exc}", err=True)
         raise SystemExit(1)
 
-    click.echo(f"  Copied to:   {copied_to}")
+    _echo(f"  Copied to:   {copied_to}")
     _report_copied_assets(copied_to)
 
     # Step 2: GitHub Contents API push (no local git needed).
@@ -287,7 +295,7 @@ def pub(
         click.echo("  Pushing via GitHub Contents API...")
         try:
             html_url = publish_via_github_api(src)
-            click.echo(f"  Published:   {html_url}")
+            _echo(f"  Published:   {html_url}")
         except PublishError as exc:
             click.echo(f"  GitHub API error: {exc}", err=True)
             raise SystemExit(1)

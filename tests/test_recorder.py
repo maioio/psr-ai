@@ -229,10 +229,11 @@ def test_stop_recording_returns_pending_output(tmp_path):
     expected = tmp_path / "recording.zip"
     r._pending_output = expected
 
-    with patch("psr_ai.core.recorder.subprocess.run") as mock_run:
+    # _launch uses Popen internally; mock it so no real process is spawned.
+    with patch("psr_ai.core.recorder.subprocess.Popen") as mock_popen:
         result = r.stop_recording()
 
     assert result == expected
-    mock_run.assert_called_once()
-    args_passed = mock_run.call_args[0][0]
+    mock_popen.assert_called_once()
+    args_passed = mock_popen.call_args[0][0]
     assert "/stop" in args_passed

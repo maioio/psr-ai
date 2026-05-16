@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.resources
 import subprocess
 import shutil
+import sys
 from pathlib import Path
 
 from psr_ai.utils.paths import default_output_dir, resolve_env_path, safe_path, timestamp_filename
@@ -161,6 +162,10 @@ class Recorder:
 
         PSR runs asynchronously: Popen returns immediately so the terminal
         stays free. The recording continues until stop_recording() is called.
+
+        On machines where psr.exe requires elevation (WinError 740), this
+        method falls back to ShellExecuteW automatically so the user never
+        needs to manually run as Administrator.
         """
         if output_path is None:
             out_dir = default_output_dir()
@@ -171,29 +176,74 @@ class Recorder:
         out.parent.mkdir(parents=True, exist_ok=True)
         self._pending_output = out
 
-        subprocess.Popen(
-            [
-                str(self._psr_exe),
-                "/start",
-                "/output", str(out),
-                "/sc", "1",
-                "/maxsc", str(max_screenshots),
-                "/gui", "0",
-            ],
-            shell=self._use_shell,
-            creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
-        )
+        args = [
+            str(self._psr_exe),
+            "/start",
+            "/output", str(out),
+            "/sc", "1",
+            "/maxsc", str(max_screenshots),
+            "/gui", "0",
+        ]
+        self._launch(args)
         return out
 
     def stop_recording(self) -> Path | None:
         """Send the /stop signal to PSR.exe and wait for it to commit the ZIP."""
-        subprocess.run(
-            [str(self._psr_exe), "/stop"],
-            shell=self._use_shell,
-            creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
-            check=False,
-        )
+        self._launch([str(self._psr_exe), "/stop"])
         return self._pending_output
+
+    def _launch(self, args: list[str]) -> None:
+        """Launch a psr.exe command, falling back to ShellExecuteW on WinError 740.
+
+        WinError 740 means the executable has a UAC elevation manifest.
+        ShellExecuteW honours that manifest and handles the elevation prompt
+        transparently without requiring the user to run the terminal as Admin.
+        """
+        try:
+            subprocess.Popen(
+                args,
+                shell=self._use_shell,
+                creationflags=(
+                    subprocess.CREATE_NO_WINDOW
+                    if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+                ),
+            )
+        except OSError as exc:
+            # WinError 740: "The requested operation requires elevation."
+            # Use ShellExecuteW which respects the exe's UAC manifest and
+            # triggers the elevation prompt (or auto-elevates if UAC is off).
+            if sys.platform == "win32" and getattr(exc, "winerror", None) == 740:
+                self._shell_execute(args)
+            else:
+                raise
+
+    @staticmethod
+    def _shell_execute(args: list[str]) -> None:
+        """Launch a command via Windows ShellExecuteW.
+
+        This bypasses the need for the calling process to already be elevated.
+        Windows handles the UAC manifest of the target executable directly.
+        args[0] is the executable; args[1:] are joined as a parameter string.
+        """
+        import ctypes
+        exe = args[0]
+        params = " ".join(
+            f'"{a}"' if " " in a else a
+            for a in args[1:]
+        )
+        ret = ctypes.windll.shell32.ShellExecuteW(
+            None,    # no parent window
+            "open",  # verb: open respects the exe's own elevation manifest
+            exe,
+            params,
+            None,    # working directory - inherit
+            0,       # SW_HIDE: no window flash
+        )
+        # ShellExecuteW returns a value > 32 on success.
+        if ret <= 32:
+            raise OSError(
+                f"ShellExecuteW failed with code {ret} for: {exe} {params}"
+            )
 
     def is_recording_active(self) -> bool:
         """Return True if a psr.exe process is currently running on this machine."""

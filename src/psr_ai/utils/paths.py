@@ -94,8 +94,9 @@ def default_output_dir(source: Path | None = None) -> Path:
     """Return the default output directory for a recording session.
 
     When source is given the output directory sits next to it.
-    Otherwise falls back to ./psr_output/ relative to the current directory.
+    Otherwise uses the user's home directory so the path never contains
+    non-ASCII characters that would break Windows console output on CP1252.
     """
     if source is not None:
         return source.parent / (source.stem + "_output")
-    return Path.cwd() / "psr_output"
+    return Path.home() / "psr_output"
