@@ -6,19 +6,24 @@ Always read in binary mode and detect encoding rather than trusting MIME headers
 
 from __future__ import annotations
 
+from pathlib import Path
 
-# Ordered list of encodings to try before giving up.
-# utf-8-sig handles the Windows BOM that PSR sometimes prepends.
-_FALLBACK_ENCODINGS = ["utf-8-sig", "utf-8", "windows-1252", "latin-1"]
+
+def read_mht_binary(path: Path) -> bytes:
+    """Read a file in binary mode and return the raw bytes."""
+    return Path(path).read_bytes()
 
 
 def decode_mht_bytes(data: bytes) -> str:
-    """Decode raw MHT bytes to a string, trying common encodings in order.
+    """Decode raw MHT bytes to a string using a robust fallback chain.
 
-    The function first attempts to extract the charset from the MIME Content-Type
-    header. If that fails or the declared codec raises an error, it falls through
-    the fallback list. latin-1 is the final fallback because it decodes every
-    byte without raising, though with possible mojibake for non-Latin scripts.
+    Fallback order:
+      1. Declared charset extracted from MIME Content-Type header (first 4 KB only)
+      2. utf-8-sig (handles Windows BOM)
+      3. windows-1252 (handles localized Windows UI text including Hebrew PSR labels)
+      4. utf-8 with errors=replace (final: never raises, never crashes)
+
+    This function MUST NEVER raise an exception on any byte sequence.
     """
     declared = _extract_declared_charset(data)
     candidates = _build_candidate_list(declared)
@@ -29,9 +34,8 @@ def decode_mht_bytes(data: bytes) -> str:
         except (UnicodeDecodeError, LookupError):
             continue
 
-    # latin-1 cannot fail on any byte sequence; this line is always reached if
-    # every other codec errors out.
-    return data.decode("latin-1", errors="replace")
+    # utf-8 with errors=replace cannot fail on any byte sequence.
+    return data.decode("utf-8", errors="replace")
 
 
 def _extract_declared_charset(data: bytes) -> str | None:
@@ -45,11 +49,16 @@ def _extract_declared_charset(data: bytes) -> str | None:
 
 
 def _build_candidate_list(declared: str | None) -> list[str]:
-    """Return a deduplicated codec list with the declared charset first."""
+    """Build a deduplicated codec list with the declared charset first.
+
+    The list excludes the final utf-8 replace fallback so callers can
+    iterate strict decoders and handle the catch-all separately.
+    """
+    base = ["utf-8-sig", "windows-1252"]
     candidates: list[str] = []
     if declared:
         candidates.append(declared)
-    for enc in _FALLBACK_ENCODINGS:
+    for enc in base:
         if enc not in candidates:
             candidates.append(enc)
     return candidates

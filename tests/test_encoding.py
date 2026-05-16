@@ -1,7 +1,10 @@
 """Unit tests for utils/encoding.py - the MHT charset detection pipeline."""
 
+import random
+from pathlib import Path
+
 import pytest
-from psr_ai.utils.encoding import decode_mht_bytes, _extract_declared_charset
+from psr_ai.utils.encoding import decode_mht_bytes, read_mht_binary, _extract_declared_charset
 
 
 def test_decode_plain_utf8():
@@ -51,3 +54,23 @@ def test_decode_falls_back_on_unknown_charset():
     body = b"Safe ASCII content"
     result = decode_mht_bytes(header + body)
     assert "Safe ASCII content" in result
+
+
+def test_read_mht_binary_returns_bytes(tmp_path):
+    # Verify read_mht_binary reads a file and returns raw bytes.
+    sample = b"MHT binary content \x89\x00\xff"
+    test_file = tmp_path / "test.mht"
+    test_file.write_bytes(sample)
+    result = read_mht_binary(test_file)
+    assert isinstance(result, bytes)
+    assert result == sample
+
+
+def test_decode_never_raises_on_arbitrary_bytes():
+    # Ten random byte sequences of varying lengths must not raise.
+    rng = random.Random(99)
+    for _ in range(10):
+        length = rng.randint(0, 1024)
+        data = bytes(rng.randint(0, 255) for _ in range(length))
+        result = decode_mht_bytes(data)
+        assert isinstance(result, str)

@@ -8,7 +8,7 @@ import click
 
 from psr_ai import __version__
 from psr_ai.core.recorder import PSRNotFoundError, Recorder
-from psr_ai.core.parser import parse_session
+from psr_ai.core.parser import parse_session, generate_json_meta
 from psr_ai.core.generator import generate_markdown, generate_gif
 from psr_ai.core.publisher import publish
 from psr_ai.utils.paths import default_output_dir
@@ -65,6 +65,7 @@ def stop() -> None:
     """Stop the active PSR recording session and save the ZIP.
 
     Waits for PSR to finish writing the file before returning.
+    After saving, automatically parses the ZIP and extracts step data.
     """
     try:
         recorder = Recorder()
@@ -79,7 +80,20 @@ def stop() -> None:
         click.echo(f"Recording stopped.")
         click.echo(f"  File: {zip_path}")
         click.echo(f"  Size: {size_kb} KB")
-        click.echo(f"Run `sa pub {zip_path}` to generate documentation.")
+
+        # Auto-parse: extract steps and generate JSON metadata.
+        try:
+            session = parse_session(zip_path)
+            output_dir = default_output_dir(zip_path)
+            json_path = generate_json_meta(session, output_dir / "data.json")
+            screenshots_dir = output_dir / "screenshots"
+            click.echo(f"  Parsed: {len(session.steps)} steps extracted")
+            click.echo(f"  Data:   {json_path}")
+            click.echo(f"  Screenshots: {screenshots_dir}")
+            click.echo(f"  Run `sa pub {zip_path}` to generate full Markdown documentation.")
+        except Exception as exc:
+            click.echo(f"  Warning: auto-parse failed ({exc}). The ZIP was saved successfully.", err=True)
+            click.echo(f"Run `sa pub {zip_path}` to generate documentation.")
     else:
         click.echo("Recording stopped.")
         click.echo("  Note: output file not found - PSR may have exited before saving.")
