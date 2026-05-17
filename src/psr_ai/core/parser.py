@@ -1,13 +1,14 @@
-"""Parses PSR output: auto-unzips the archive, reads the MHT, extracts PNG steps."""
+"""Parses PSR output: reads the MHT entirely into memory, extracts PNG steps in parallel."""
 
 from __future__ import annotations
 
 import base64
+import concurrent.futures
 import email
 import email.policy
+import io
 import json
 import re
-import tempfile
 import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -16,6 +17,47 @@ from pathlib import Path
 from psr_ai.utils.encoding import decode_mht_bytes, read_mht_binary
 from psr_ai.utils.paths import safe_path, default_output_dir
 
+
+# ---------------------------------------------------------------------------
+# Pre-compiled patterns (compiled once at import time for zero per-call cost)
+# ---------------------------------------------------------------------------
+
+# PSR step heading: <p class="step">Step N: <b>Action text</b></p>
+_RE_STEP = re.compile(
+    r'<[^>]*class=["\']?step["\']?[^>]*>\s*'
+    r'(?:Step\s*(\d+)\s*[:\-])?\s*'
+    r'(?:<b[^>]*>([^<]*)</b>)?',
+    re.IGNORECASE,
+)
+
+# Timestamp inside PSR HTML: M/D/YYYY H:MM:SS AM/PM
+_RE_TIMESTAMP = re.compile(
+    r'(\d{1,2}/\d{1,2}/\d{4}\s+\d{1,2}:\d{2}:\d{2}\s*(?:AM|PM)?)',
+    re.IGNORECASE,
+)
+
+# Program / window title
+_RE_PROGRAM = re.compile(
+    r'(?:window title|program):\s*([^\n<]+)',
+    re.IGNORECASE,
+)
+
+# Fallback <dd> blocks used by some PSR versions
+_RE_DD = re.compile(r'<dd[^>]*>(.*?)</dd>', re.IGNORECASE | re.DOTALL)
+
+# HTML tag stripper (used inside _RE_DD fallback)
+_RE_TAGS = re.compile(r'<[^>]+>')
+
+# <title> extraction
+_RE_TITLE = re.compile(r'<title[^>]*>([^<]+)</title>', re.IGNORECASE)
+
+# Base64 whitespace stripper (PSR inserts CRLF every 76 chars)
+_RE_WS = re.compile(r'\s+')
+
+
+# ---------------------------------------------------------------------------
+# Data model
+# ---------------------------------------------------------------------------
 
 @dataclass
 class Step:
@@ -39,6 +81,10 @@ class RecordingSession:
     title: str = ""
 
 
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
 def extract_zip(zip_path: Path, extract_to: Path) -> Path:
     """Validate and extract a PSR ZIP, returning the path of the inner .mht file.
 
@@ -51,49 +97,63 @@ def extract_zip(zip_path: Path, extract_to: Path) -> Path:
     extract_to = Path(extract_to)
     extract_to.mkdir(parents=True, exist_ok=True)
 
+    extract_to = extract_to.resolve()
+
     with zipfile.ZipFile(zip_path) as zf:
-        zf.extractall(extract_to)
         mht_names = [n for n in zf.namelist() if n.lower().endswith(".mht")]
+        if not mht_names:
+            raise ValueError(f"No .mht file found inside {zip_path.name}")
 
-    if not mht_names:
-        raise ValueError(f"No .mht file found inside {zip_path.name}")
+        # Guard against zip-slip: every member path must resolve inside extract_to.
+        for member in zf.infolist():
+            member_path = (extract_to / member.filename).resolve()
+            try:
+                member_path.relative_to(extract_to)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Unsafe ZIP entry detected (potential path traversal): {member.filename!r}"
+                ) from exc
 
-    # PSR always produces exactly one MHT; take the first match.
+        zf.extractall(extract_to)
+
     return extract_to / mht_names[0]
 
 
 def parse_mht(mht_path: Path, output_dir: Path) -> RecordingSession:
-    """Parse a .mht file and return a populated RecordingSession.
+    """Parse a .mht file entirely in memory and return a populated RecordingSession.
 
-    Uses email.message_from_bytes on the raw bytes so the MIME parser handles
-    boundary detection itself, avoiding charset round-trip issues (Pitfall 1).
+    The MHT is read once into a BytesIO buffer; MIME walking and base64 decoding
+    all operate on in-memory bytes. PNG files are written to disk in parallel via
+    ThreadPoolExecutor to avoid sequential I/O bottlenecks.
     """
     mht_path = Path(mht_path)
     output_dir = Path(output_dir)
     screenshots_dir = output_dir / "screenshots"
+    screenshots_dir.mkdir(parents=True, exist_ok=True)
 
-    raw = read_mht_binary(mht_path)
+    # Read the entire MHT into memory once.
+    raw: bytes = read_mht_binary(mht_path)
+    buf = io.BytesIO(raw)
 
     # Parse from raw bytes: more reliable than round-tripping through a string.
-    # email.policy.compat32 preserves the original MIME structure PSR produces.
-    msg = email.message_from_bytes(raw, policy=email.policy.compat32)
+    msg = email.message_from_bytes(buf.read(), policy=email.policy.compat32)
 
-    # Also keep a decoded text copy for title extraction and metadata regex.
+    # Keep a decoded text copy for title extraction and metadata regex.
     mht_text = decode_mht_bytes(raw)
 
-    image_parts: list[tuple[int, bytes, str]] = []  # (sequence_index, bytes, location)
+    image_parts: list[tuple[int, bytes, str]] = []
     html_text = ""
 
     for part in msg.walk():
         ctype = part.get_content_type()
+
         if ctype in ("image/png", "image/jpeg", "image/gif"):
             encoding = part.get("Content-Transfer-Encoding", "").lower()
             payload = part.get_payload()
             if not payload:
                 continue
             if encoding == "base64":
-                # Strip whitespace that some PSR versions insert in long base64 lines.
-                raw_b64 = re.sub(r"\s+", "", payload)
+                raw_b64 = _RE_WS.sub("", payload)
                 try:
                     img_bytes = base64.b64decode(raw_b64)
                 except Exception:
@@ -111,15 +171,21 @@ def parse_mht(mht_path: Path, output_dir: Path) -> RecordingSession:
             elif isinstance(part.get_payload(), str):
                 html_text = part.get_payload()
 
-    # Save screenshots and build steps.
-    screenshots_dir.mkdir(parents=True, exist_ok=True)
+    # Write PNGs to disk in parallel; each task is independent I/O.
+    def _write_png(args: tuple[int, bytes]) -> Path:
+        seq, img_bytes = args
+        png_path = screenshots_dir / f"step_{seq:03d}.png"
+        png_path.write_bytes(img_bytes)
+        return png_path
+
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        executor.map(_write_png, [(seq, img) for seq, img, _ in image_parts])
+
+    # Build steps from in-memory metadata.
     step_meta = _extract_step_metadata(html_text)
     steps: list[Step] = []
 
     for seq, img_bytes, location in image_parts:
-        img_path = screenshots_dir / f"step_{seq:03d}.png"
-        img_path.write_bytes(img_bytes)
-
         meta = step_meta[seq] if seq < len(step_meta) else {}
         label = meta.get("label") or _label_from_location(location) or f"Step {seq}"
         steps.append(Step(
@@ -133,90 +199,31 @@ def parse_mht(mht_path: Path, output_dir: Path) -> RecordingSession:
         ))
 
     title = _extract_title(mht_text)
-    session = RecordingSession(
-        source_zip=mht_path,  # caller will override with zip_path
-        steps=steps,
-        title=title,
-    )
-    return session
-
-
-def _extract_step_metadata(html: str) -> list[dict]:
-    """Extract per-step metadata from the PSR HTML structure.
-
-    PSR uses patterns like:
-      <p class="step">Step N: <b>Action text</b></p>
-      <dd>...</dd> blocks with timestamps and UI info.
-    Returns a list of dicts, one per detected step (may be shorter than image count).
-    """
-    if not html:
-        return []
-
-    results: list[dict] = []
-
-    # Primary pattern: PSR step headings.
-    step_pattern = re.compile(
-        r'<[^>]*class=["\']?step["\']?[^>]*>\s*'
-        r'(?:Step\s*(\d+)\s*[:\-])?\s*'
-        r'(?:<b[^>]*>([^<]*)</b>)?',
-        re.IGNORECASE,
-    )
-    # Timestamp pattern inside PSR HTML.
-    timestamp_pattern = re.compile(
-        r'(\d{1,2}/\d{1,2}/\d{4}\s+\d{1,2}:\d{2}:\d{2}\s*(?:AM|PM)?)',
-        re.IGNORECASE,
-    )
-    # Program/window title pattern.
-    program_pattern = re.compile(
-        r'(?:window title|program):\s*([^\n<]+)',
-        re.IGNORECASE,
-    )
-
-    for m in step_pattern.finditer(html):
-        label_text = (m.group(2) or "").strip()
-        ts_m = timestamp_pattern.search(html, m.start())
-        ts = ts_m.group(1).strip() if ts_m else ""
-        prog_m = program_pattern.search(html, m.start())
-        prog = prog_m.group(1).strip() if prog_m else ""
-        results.append({
-            "label": label_text,
-            "timestamp": ts,
-            "ui_element": "",
-            "program": prog,
-            "action_text": label_text,
-        })
-
-    # Fallback: look for <dd> blocks used in some PSR versions.
-    if not results:
-        dd_pattern = re.compile(r'<dd[^>]*>(.*?)</dd>', re.IGNORECASE | re.DOTALL)
-        for i, m in enumerate(dd_pattern.finditer(html)):
-            inner = re.sub(r'<[^>]+>', '', m.group(1)).strip()
-            results.append({
-                "label": inner[:80] if inner else f"Step {i}",
-                "timestamp": "",
-                "ui_element": "",
-                "program": "",
-                "action_text": inner,
-            })
-
-    return results
+    return RecordingSession(source_zip=mht_path, steps=steps, title=title)
 
 
 def parse_session(zip_path: Path) -> RecordingSession:
     """Parse a PSR ZIP file and return a RecordingSession with all steps.
 
-    PSR always wraps the MHT inside a ZIP (Pitfall 4).
-    The MHT may lack a charset declaration (Pitfall 1): decode_mht_bytes handles that.
+    The MHT inside the ZIP is read directly into memory via ZipFile.read() so
+    no temporary directory is needed and no bytes hit the physical disk until
+    the parallel PNG writer flushes them.
     """
     zip_path = safe_path(zip_path)
     output_dir = default_output_dir(zip_path)
 
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp)
-        mht_path = extract_zip(zip_path, tmp_path)
-        session = parse_mht(mht_path, output_dir)
+    if not zipfile.is_zipfile(zip_path):
+        raise ValueError(f"Not a valid ZIP file: {zip_path}")
 
-    # Fix source_zip to point to the original zip, not the tmp mht.
+    with zipfile.ZipFile(zip_path) as zf:
+        mht_names = [n for n in zf.namelist() if n.lower().endswith(".mht")]
+        if not mht_names:
+            raise ValueError(f"No .mht file found inside {zip_path.name}")
+
+        # Read the MHT directly into memory without touching the filesystem.
+        raw: bytes = zf.read(mht_names[0])
+
+    session = _parse_mht_from_bytes(raw, output_dir)
     session.source_zip = zip_path
     return session
 
@@ -233,7 +240,6 @@ def generate_json_meta(session: RecordingSession, output_path: Path) -> Path:
 
     steps_data = []
     for step in session.steps:
-        # Compute relative screenshot path using forward slashes.
         screenshots_dir = out_parent / "screenshots"
         img_file = screenshots_dir / f"step_{step.index:03d}.png"
         if img_file.exists():
@@ -281,16 +287,133 @@ def save_images(session: RecordingSession, out_dir: Path) -> list[Path]:
     return paths
 
 
+# ---------------------------------------------------------------------------
+# Internal: in-memory MHT parser (used by parse_session)
+# ---------------------------------------------------------------------------
+
+def _parse_mht_from_bytes(raw: bytes, output_dir: Path) -> RecordingSession:
+    """Parse MHT bytes that are already in memory; same logic as parse_mht."""
+    output_dir = Path(output_dir)
+    screenshots_dir = output_dir / "screenshots"
+    screenshots_dir.mkdir(parents=True, exist_ok=True)
+
+    buf = io.BytesIO(raw)
+    msg = email.message_from_bytes(buf.read(), policy=email.policy.compat32)
+    mht_text = decode_mht_bytes(raw)
+
+    image_parts: list[tuple[int, bytes, str]] = []
+    html_text = ""
+
+    for part in msg.walk():
+        ctype = part.get_content_type()
+
+        if ctype in ("image/png", "image/jpeg", "image/gif"):
+            encoding = part.get("Content-Transfer-Encoding", "").lower()
+            payload = part.get_payload()
+            if not payload:
+                continue
+            if encoding == "base64":
+                raw_b64 = _RE_WS.sub("", payload)
+                try:
+                    img_bytes = base64.b64decode(raw_b64)
+                except Exception:
+                    continue
+            else:
+                img_bytes = part.get_payload(decode=True) or b""
+
+            location = part.get("Content-Location", "")
+            image_parts.append((len(image_parts), img_bytes, location))
+
+        elif ctype in ("text/html", "text/plain") and not html_text:
+            payload = part.get_payload(decode=True)
+            if payload:
+                html_text = decode_mht_bytes(payload)
+            elif isinstance(part.get_payload(), str):
+                html_text = part.get_payload()
+
+    def _write_png(args: tuple[int, bytes]) -> Path:
+        seq, img_bytes = args
+        png_path = screenshots_dir / f"step_{seq:03d}.png"
+        png_path.write_bytes(img_bytes)
+        return png_path
+
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        executor.map(_write_png, [(seq, img) for seq, img, _ in image_parts])
+
+    step_meta = _extract_step_metadata(html_text)
+    steps: list[Step] = []
+
+    for seq, img_bytes, location in image_parts:
+        meta = step_meta[seq] if seq < len(step_meta) else {}
+        label = meta.get("label") or _label_from_location(location) or f"Step {seq}"
+        steps.append(Step(
+            index=seq,
+            label=label,
+            image_bytes=img_bytes,
+            timestamp=meta.get("timestamp", ""),
+            ui_element=meta.get("ui_element", ""),
+            program=meta.get("program", ""),
+            action_text=meta.get("action_text", ""),
+        ))
+
+    title = _extract_title(mht_text)
+    return RecordingSession(source_zip=output_dir, steps=steps, title=title)
+
+
+# ---------------------------------------------------------------------------
+# Internal: metadata extraction
+# ---------------------------------------------------------------------------
+
+def _extract_step_metadata(html: str) -> list[dict]:
+    """Extract per-step metadata from the PSR HTML structure using compiled patterns.
+
+    PSR uses patterns like:
+      <p class="step">Step N: <b>Action text</b></p>
+      <dd>...</dd> blocks with timestamps and UI info.
+    Returns a list of dicts, one per detected step (may be shorter than image count).
+    """
+    if not html:
+        return []
+
+    results: list[dict] = []
+
+    for m in _RE_STEP.finditer(html):
+        label_text = (m.group(2) or "").strip()
+        ts_m = _RE_TIMESTAMP.search(html, m.start())
+        ts = ts_m.group(1).strip() if ts_m else ""
+        prog_m = _RE_PROGRAM.search(html, m.start())
+        prog = prog_m.group(1).strip() if prog_m else ""
+        results.append({
+            "label": label_text,
+            "timestamp": ts,
+            "ui_element": "",
+            "program": prog,
+            "action_text": label_text,
+        })
+
+    if not results:
+        for i, m in enumerate(_RE_DD.finditer(html)):
+            inner = _RE_TAGS.sub("", m.group(1)).strip()
+            results.append({
+                "label": inner[:80] if inner else f"Step {i}",
+                "timestamp": "",
+                "ui_element": "",
+                "program": "",
+                "action_text": inner,
+            })
+
+    return results
+
+
 def _label_from_location(location: str) -> str:
     """Derive a human-readable step label from the MIME Content-Location header."""
     if not location:
         return "Step"
     stem = Path(location).stem
-    # Replace underscores and hyphens with spaces for readability.
     return stem.replace("_", " ").replace("-", " ").title()
 
 
 def _extract_title(mht_text: str) -> str:
     """Pull the recording title from the MHT HTML content if present."""
-    match = re.search(r"<title[^>]*>([^<]+)</title>", mht_text, re.IGNORECASE)
+    match = _RE_TITLE.search(mht_text)
     return match.group(1).strip() if match else "PSR Recording"

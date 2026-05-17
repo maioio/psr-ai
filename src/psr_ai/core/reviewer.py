@@ -116,13 +116,28 @@ def _drop_step(step: dict, screenshots_dir: Path, echo_fn) -> None:
 
 
 def _regenerate(source_dir: Path, data_path: Path, echo_fn) -> None:
-    """Re-render report.md from the pruned data.json."""
+    """Re-render report.md and action_replay.gif from the pruned data.json."""
     try:
         from psr_ai.core.generator import MarkdownGenerator
         report_path = MarkdownGenerator(data_path).write(source_dir)
         echo_fn(f"Report regenerated: {report_path}")
     except Exception as exc:
         echo_fn(f"Warning: could not regenerate report ({exc}).")
+
+    try:
+        from psr_ai.core.generator import GifGenerator
+        gif_gen = GifGenerator(
+            data_json_path=data_path,
+            screenshots_dir=source_dir / "screenshots",
+        )
+        gif_path = gif_gen.write(source_dir)
+        echo_fn(f"GIF regenerated:    {gif_path}")
+    except ImportError:
+        pass  # Pillow not installed - GIF step is optional, silently skip
+    except ValueError:
+        pass  # No frames left after drops - nothing to GIF
+    except Exception as exc:
+        echo_fn(f"Warning: could not regenerate GIF ({exc}).")
 
 
 def _default_prompt(message: str) -> str:

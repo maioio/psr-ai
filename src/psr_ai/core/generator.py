@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import posixpath
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -68,12 +70,14 @@ _STEP_BLOCK = """\
 |---|---|
 | Timestamp | {timestamp} |
 | Program | {program} |
-| Action | {action_text} |
+| Action | {action_text} |{ai_row}
 
 {screenshot_line}
 ---
 
 """
+
+_AI_ROW = "\n| AI Description | {ai_description} |"
 
 _SCREENSHOT_LINE = "![Step {index} screenshot]({img_rel})\n"
 _NO_SCREENSHOT_LINE = "_No screenshot captured for this step._\n"
@@ -213,6 +217,7 @@ class MarkdownGenerator:
             timestamp = s.get("timestamp") or "not recorded"
             program = s.get("program") or "not recorded"
             action_text = s.get("action_text") or label
+            ai_description = s.get("ai_description", "")
 
             screenshot_rel = s.get("screenshot", "")
             # _safe_relative returns "" when the path traverses outside the output
@@ -225,12 +230,14 @@ class MarkdownGenerator:
             else:
                 screenshot_line = _NO_SCREENSHOT_LINE
 
+            ai_row = _AI_ROW.format(ai_description=ai_description) if ai_description else ""
             parts.append(_STEP_BLOCK.format(
                 index=index,
                 label=label,
                 timestamp=timestamp,
                 program=program,
                 action_text=action_text,
+                ai_row=ai_row,
                 screenshot_line=screenshot_line,
             ))
 
@@ -523,7 +530,6 @@ def _to_anchor(text: str) -> str:
     GitHub lowercases all chars, replaces spaces with hyphens, and strips
     characters that are not alphanumeric, hyphens, or underscores.
     """
-    import re
     slug = text.lower()
     slug = re.sub(r"[^\w\s-]", "", slug)
     slug = re.sub(r"[\s_]+", "-", slug)
@@ -538,7 +544,6 @@ def _safe_relative(rel: str) -> str:
     path in data.json cannot cause the Markdown to reference files outside
     the output directory.
     """
-    import posixpath
     normalised = rel.replace("\\", "/")
     clean = posixpath.normpath(normalised)
     clean = clean.lstrip("/")
@@ -641,10 +646,9 @@ def _within_threshold(ts_a: str | None, ts_b: str | None) -> bool:
     if not ts_a or not ts_b:
         return True
     try:
-        from datetime import datetime as _dt
         fmt = "%m/%d/%Y %I:%M:%S %p"
-        t_a = _dt.strptime(ts_a.strip(), fmt)
-        t_b = _dt.strptime(ts_b.strip(), fmt)
+        t_a = datetime.strptime(ts_a.strip(), fmt)
+        t_b = datetime.strptime(ts_b.strip(), fmt)
         return abs((t_b - t_a).total_seconds()) <= _MERGE_THRESHOLD_SECONDS
     except ValueError:
         return True

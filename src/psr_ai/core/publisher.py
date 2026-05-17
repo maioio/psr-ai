@@ -87,19 +87,46 @@ class Publisher:
     # Git automation
     # ------------------------------------------------------------------
 
+    def current_branch(self) -> str:
+        """Return the name of the currently checked-out branch."""
+        result = self._git("rev-parse", "--abbrev-ref", "HEAD")
+        return result.stdout.strip()
+
+    def create_branch(self, branch: str) -> None:
+        """Create and check out a new local branch.
+
+        Raises PublishError if the branch already exists locally.
+        """
+        self._git("checkout", "-b", branch)
+
+    def branch_exists_remote(self, branch: str, remote: str = "origin") -> bool:
+        """Return True if the branch already exists on the given remote."""
+        try:
+            result = self._git(
+                "ls-remote", "--heads", remote,
+                f"refs/heads/{branch}",
+            )
+            return bool(result.stdout.strip())
+        except PublishError:
+            return False
+
     def commit_and_push(
         self,
         dest: Path,
         message: str | None = None,
         remote: str = "origin",
         branch: str | None = None,
+        create_branch: bool = False,
     ) -> str:
         """Stage the destination directory, commit, and push.
 
-        dest:    the directory returned by copy() - passed to git add.
-        message: commit message. Defaults to a timestamped automated message.
-        remote:  git remote name (default: origin).
-        branch:  branch to push to. Defaults to the current branch.
+        dest:          the directory returned by copy() - passed to git add.
+        message:       commit message. Defaults to a timestamped automated message.
+        remote:        git remote name (default: origin).
+        branch:        branch to push to. Defaults to the current branch.
+        create_branch: when True and branch is set, create the branch locally
+                       before pushing. Raises PublishError if the branch already
+                       exists locally.
 
         Returns the commit SHA on success.
         Raises PublishError with the captured stderr if any git command fails.
@@ -109,12 +136,20 @@ class Publisher:
             session_name = dest.name
             message = f"docs: add PSR session {session_name} [{ts}]"
 
+        if create_branch and branch:
+            self.create_branch(branch)
+
         self._git("add", str(dest.relative_to(self.repo_root)))
         self._git("commit", "-m", message)
 
-        push_args = ["push", remote]
-        if branch:
-            push_args.append(branch)
+        push_args = ["push"]
+        if create_branch and branch:
+            # -u / --set-upstream must come before remote and branch name.
+            push_args.extend(["-u", remote, branch])
+        elif branch:
+            push_args.extend([remote, branch])
+        else:
+            push_args.append(remote)
         self._git(*push_args)
 
         # Return the commit SHA so the caller can log or display it.

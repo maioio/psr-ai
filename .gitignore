@@ -69,3 +69,6 @@ desktop.ini
 
 # Claude Code workspace
 .claude/
+
+# Generated PDF artifacts (built from markdown source via docs/_build_pdf.py)
+docs/*.pdf
