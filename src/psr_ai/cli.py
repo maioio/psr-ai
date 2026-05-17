@@ -773,3 +773,225 @@ def pipeline(
     result = run_pipeline(config, echo_fn=_echo)
     _echo(result.report())
     raise SystemExit(0 if result.success else 1)
+
+
+# ------------------------------------------------------------------
+# sa replay
+# ------------------------------------------------------------------
+
+@main.command()
+@click.argument("zip_path", type=click.Path(exists=True, dir_okay=False))
+@click.option(
+    "--dry-run/--no-dry-run",
+    default=True,
+    show_default=True,
+    help="Show what Claude would do without actually executing actions.",
+)
+@click.option(
+    "--ask/--no-ask",
+    "ask_before_action",
+    default=False,
+    show_default=True,
+    help="Prompt for confirmation before each action. Default OFF (fully automatic).",
+)
+@click.option(
+    "--max-steps",
+    default=60,
+    show_default=True,
+    help="Hard limit on agent steps before stopping.",
+)
+@click.option(
+    "--provider", "-p",
+    default="anthropic",
+    show_default=True,
+    type=click.Choice(["anthropic", "openai"]),
+    help="Vision LLM provider.",
+)
+@click.option(
+    "--model", "-m",
+    default=None,
+    help="LLM model override.",
+)
+@click.option(
+    "--speed",
+    default=1.0,
+    show_default=True,
+    help="Speed multiplier on screenshot interval. 2.0 = slower (more stable); 0.5 = faster.",
+)
+@click.option(
+    "--output-dir", "-o",
+    default=None,
+    type=click.Path(file_okay=False),
+    help="Directory to save the replay session log.",
+)
+def replay(
+    zip_path,
+    dry_run,
+    ask_before_action,
+    max_steps,
+    provider,
+    model,
+    speed,
+    output_dir,
+):
+    """Replay a recorded session using Claude as the execution engine.
+
+    Instead of replaying at exact coordinates (brittle macro), Claude sees
+    the live screen at each step and adapts to the current UI state.
+
+    ZIP_PATH is the path to a parsed session ZIP (produced by `sa stop` or
+    `sa pipeline`). The session must contain a data.json file.
+
+    By default runs in --dry-run mode (safe). Add --no-dry-run to execute.
+
+    Examples:
+
+      sa replay session.zip
+
+      sa replay session.zip --no-dry-run --no-ask
+
+      sa replay session.zip --provider openai --speed 0.5
+    """
+    from psr_ai.core.replay import ReplayConfig, run_replay
+
+    if not dry_run and not ask_before_action:
+        click.echo(
+            "WARNING: running in fully autonomous mode (--no-dry-run --no-ask). "
+            "Claude will execute all actions without confirmation.",
+            err=True,
+        )
+
+    config = ReplayConfig(
+        zip_path=Path(zip_path),
+        dry_run=dry_run,
+        ask_before_action=ask_before_action,
+        max_steps=max_steps,
+        provider=provider,
+        model=model or None,
+        speed=speed,
+        output_dir=Path(output_dir) if output_dir else None,
+    )
+
+    result = run_replay(config, echo_fn=_echo)
+    _echo(result.report())
+    raise SystemExit(0 if result.success else 1)
+
+
+# ------------------------------------------------------------------
+# sa watch
+# ------------------------------------------------------------------
+
+@main.command()
+@click.argument("trigger")
+@click.option(
+    "--action", "-a",
+    required=True,
+    help="What to do when the trigger is detected (natural language).",
+)
+@click.option(
+    "--interval",
+    default=5.0,
+    show_default=True,
+    help="Seconds between screen checks.",
+)
+@click.option(
+    "--timeout",
+    default=3600.0,
+    show_default=True,
+    help="Stop watching after this many seconds.",
+)
+@click.option(
+    "--max-triggers",
+    default=1,
+    show_default=True,
+    help="Stop after detecting and handling this many triggers.",
+)
+@click.option(
+    "--dry-run/--no-dry-run",
+    default=True,
+    show_default=True,
+    help="Detect triggers but do not execute the action.",
+)
+@click.option(
+    "--ask/--no-ask",
+    "ask_before_action",
+    default=False,
+    show_default=True,
+    help="Prompt before each action step. Default OFF.",
+)
+@click.option(
+    "--provider", "-p",
+    default="anthropic",
+    show_default=True,
+    type=click.Choice(["anthropic", "openai"]),
+    help="Vision LLM provider.",
+)
+@click.option(
+    "--model", "-m",
+    default=None,
+    help="LLM model override.",
+)
+@click.option(
+    "--output-dir", "-o",
+    default=None,
+    type=click.Path(file_okay=False),
+    help="Directory to save action session logs.",
+)
+def watch(
+    trigger,
+    action,
+    interval,
+    timeout,
+    max_triggers,
+    dry_run,
+    ask_before_action,
+    provider,
+    model,
+    output_dir,
+):
+    """Watch the screen and react automatically when a condition is detected.
+
+    TRIGGER is a natural-language description of what to watch for.
+    Claude checks the screen every INTERVAL seconds and asks itself
+    whether the trigger condition is currently visible.
+
+    When detected, Claude runs the --action task using the agent loop.
+
+    By default runs in --dry-run mode: trigger detection is live but
+    the action is not executed. Add --no-dry-run to act automatically.
+
+    Examples:
+
+      sa watch "a red error dialog" --action "close it and note the message"
+
+      sa watch "the build finished" --action "run the test suite" --no-dry-run
+
+      sa watch "download complete" --action "move file to Documents" --no-dry-run --interval 3
+
+      sa watch "my name appears on screen" --action "take a screenshot" --max-triggers 5
+    """
+    from psr_ai.core.watcher import WatchConfig, run_watcher
+
+    if not dry_run and not ask_before_action:
+        click.echo(
+            "WARNING: running in fully autonomous mode (--no-dry-run --no-ask). "
+            "Claude will execute actions without confirmation when trigger fires.",
+            err=True,
+        )
+
+    config = WatchConfig(
+        trigger=trigger,
+        action=action,
+        interval=interval,
+        timeout=timeout,
+        max_triggers=max_triggers,
+        dry_run=dry_run,
+        ask_before_action=ask_before_action,
+        provider=provider,
+        model=model or None,
+        output_dir=Path(output_dir) if output_dir else None,
+    )
+
+    result = run_watcher(config, echo_fn=_echo)
+    _echo(result.report())
+    raise SystemExit(0 if result.success else 1)
