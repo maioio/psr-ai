@@ -149,9 +149,11 @@ class WindowsRecorder(BaseRecorder):
       Tier 3b   : assets/psr_fallback/psr_shortcut.lnk (Shell shortcut)
     """
 
+    _STATE_FILE = Path.home() / "psr_output" / ".current_session"
+
     def __init__(self) -> None:
         self._psr_exe: Path = self._resolve_psr()
-        self._pending_output: Path | None = None
+        self._pending_output: Path | None = self._load_state()
 
     # ------------------------------------------------------------------
     # Resolution
@@ -218,6 +220,7 @@ class WindowsRecorder(BaseRecorder):
         out = safe_path(output_path)
         out.parent.mkdir(parents=True, exist_ok=True)
         self._pending_output = out
+        self._save_state(out)
 
         args = [
             str(self._psr_exe),
@@ -233,7 +236,38 @@ class WindowsRecorder(BaseRecorder):
     def stop_recording(self) -> Path | None:
         """Send the /stop signal to psr.exe and wait for it to commit the ZIP."""
         self._launch([str(self._psr_exe), "/stop"])
-        return self._pending_output
+        out = self._pending_output or self._find_latest_zip()
+        self._clear_state()
+        return out
+
+    @classmethod
+    def _load_state(cls) -> Path | None:
+        try:
+            p = Path(cls._STATE_FILE.read_text(encoding="utf-8").strip())
+            return p if p.exists() else None
+        except (OSError, ValueError):
+            return None
+
+    @classmethod
+    def _save_state(cls, path: Path) -> None:
+        try:
+            cls._STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            cls._STATE_FILE.write_text(str(path), encoding="utf-8")
+        except OSError:
+            pass
+
+    @classmethod
+    def _clear_state(cls) -> None:
+        try:
+            cls._STATE_FILE.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    @staticmethod
+    def _find_latest_zip() -> Path | None:
+        out_dir = Path.home() / "psr_output"
+        zips = sorted(out_dir.glob("psr_*.zip"), key=lambda p: p.stat().st_mtime, reverse=True)
+        return zips[0] if zips else None
 
     def is_recording_active(self) -> bool:
         """Return True if a psr.exe process is currently running on this machine."""

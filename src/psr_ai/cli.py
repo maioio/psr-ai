@@ -45,7 +45,7 @@ def main() -> None:
 )
 @click.option(
     "--maxsc",
-    default=25,
+    default=100,
     show_default=True,
     help="Maximum number of screenshots PSR will capture.",
 )
@@ -531,6 +531,135 @@ def _report_copied_assets(dest: Path) -> None:
 
 
 # ------------------------------------------------------------------
+# sa capture / sa צלם
+# ------------------------------------------------------------------
+
+@main.command()
+@click.argument("url")
+@click.option(
+    "--output", "-o",
+    default=None,
+    type=click.Path(),
+    help="Output file path. Extension determines format: .pdf or .png (default).",
+)
+@click.option(
+    "--pdf",
+    "as_pdf",
+    is_flag=True,
+    default=False,
+    help="Save as PDF instead of PNG screenshot.",
+)
+@click.option(
+    "--crawl",
+    "do_crawl",
+    is_flag=True,
+    default=False,
+    help=(
+        "Capture multiple pages of the site into one merged PDF. "
+        "GitHub repos get a curated list; other sites follow nav links. "
+        "Automatically enables --pdf. Requires: pip install pypdf"
+    ),
+)
+@click.option(
+    "--intent", "-i",
+    default=None,
+    help=(
+        "What you care about on this site (e.g. 'anime episodes genres'). "
+        "Used to prioritise which pages to capture when --crawl is active."
+    ),
+)
+@click.option(
+    "--max-pages",
+    default=15,
+    show_default=True,
+    help="Maximum number of pages to capture when using --crawl (non-GitHub sites).",
+)
+def capture(
+    url: str,
+    output: str | None,
+    as_pdf: bool,
+    do_crawl: bool,
+    intent: str | None,
+    max_pages: int,
+) -> None:
+    """Capture a full-page screenshot or PDF from any URL.
+
+    With --crawl, follows internal links and merges everything into one PDF.
+    GitHub repos automatically get a curated page list (README, commits, issues…).
+    For other sites, use --intent to describe what you want so the right pages
+    are prioritised (e.g. --intent "episodes genres search").
+
+    If you don't pass --intent, you'll be asked interactively.
+
+    Examples:
+      sa capture https://github.com/maio/myrepo --crawl
+      sa capture https://myanimelist.net --crawl --intent "top anime genres"
+      sa capture https://example.com --crawl --max-pages 20
+      sa capture https://example.com --pdf
+    """
+    from psr_ai.core.capture import capture_page, crawl_site
+
+    if do_crawl:
+        as_pdf = True
+
+        # Ask interactively if no intent was given and it's not a GitHub repo.
+        import re as _re
+        is_github = bool(_re.match(r"https?://github\.com/[^/]+/[^/]+", url))
+        if not intent and not is_github:
+            click.echo(f"Site: {url}")
+            intent = click.prompt(
+                "  What do you want from this site? "
+                "(describe the pages/content that matter, or press Enter to capture everything)",
+                default="",
+            ).strip() or None
+
+    if output:
+        out_path = Path(output)
+        if not out_path.suffix:
+            out_path = out_path.with_suffix(".pdf" if as_pdf else ".png")
+    else:
+        stem = url.split("//")[-1].replace("/", "_").strip("_")[:60]
+        suffix = ".pdf" if as_pdf else ".png"
+        out_path = default_output_dir() / f"capture_{stem}{suffix}"
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if do_crawl:
+        click.echo(f"Crawling: {url}")
+        if intent:
+            click.echo(f"  Intent: {intent}")
+        click.echo("  This may take a minute...")
+        try:
+            result = crawl_site(
+                url, out_path,
+                intent=intent,
+                max_pages=max_pages,
+                echo_fn=_echo,
+            )
+            _echo(f"  Saved: {result}")
+        except ImportError as exc:
+            click.echo(f"Error: {exc}", err=True)
+            raise SystemExit(1)
+        except Exception as exc:
+            click.echo(f"Error: {exc}", err=True)
+            raise SystemExit(1)
+    else:
+        fmt = "PDF" if as_pdf else "screenshot"
+        click.echo(f"Capturing {fmt}: {url}")
+        click.echo("  Please wait...")
+        try:
+            result = capture_page(url, out_path, as_pdf=as_pdf)
+            _echo(f"  Saved: {result}")
+        except Exception as exc:
+            click.echo(f"Error: {exc}", err=True)
+            raise SystemExit(1)
+
+
+# Hebrew alias: sa צלם
+main.add_command(capture, name="צלם")
+
+
+# ------------------------------------------------------------------
 # sa heal
 # ------------------------------------------------------------------
 
@@ -875,6 +1004,32 @@ def replay(
     result = run_replay(config, echo_fn=_echo)
     _echo(result.report())
     raise SystemExit(0 if result.success else 1)
+
+
+# ------------------------------------------------------------------
+# sa mcp
+# ------------------------------------------------------------------
+
+@main.command()
+def mcp() -> None:
+    """Start the PSR.ai MCP JSON-RPC server on stdin/stdout.
+
+    Blocks the terminal and keeps stdin/stdout reserved for full-duplex
+    communication with an MCP host (e.g. Claude Desktop, Claude Code).
+
+    The server speaks JSON-RPC 2.0 over newline-delimited messages.
+    Send Ctrl-C or close stdin to stop it.
+
+    Tools exposed:
+      psr_start_recording  - start a recording session
+      psr_stop_and_parse   - stop, parse, and return the session report
+      psr_quick_snapshot   - capture and return an optimized Base64 screenshot
+
+    Example (manual test):
+      echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | sa mcp
+    """
+    from psr_ai.mcp import main_loop
+    main_loop()
 
 
 # ------------------------------------------------------------------

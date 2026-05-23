@@ -1,0 +1,71 @@
+name: PSR.ai Self-Healing Pipeline
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  heal:
+    name: Self-Healing Diagnostics
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'failure' || github.event_name != 'workflow_run' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install PSR.ai
+        run: pip install psr-ai
+
+      - name: Run self-healing diagnostics
+        run: sa heal
+        continue-on-error: true
+
+      - name: Upload diagnostics report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: psr-heal-report
+          path: psr_output/
+          retention-days: 7
+
+  pipeline:
+    name: Session Pipeline (on tagged release)
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: heal
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install PSR.ai with extras
+        run: pip install "psr-ai[gif,ai]"
+
+      - name: Run session pipeline
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPO: ${{ github.repository }}
+        run: |
+          if [ -f psr_output/latest.zip ]; then
+            sa pipeline psr_output/latest.zip --analyze --github-api
+          else
+            echo "No session ZIP found - skipping pipeline step."
+          fi

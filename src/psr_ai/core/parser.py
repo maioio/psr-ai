@@ -1,4 +1,19 @@
-"""Parses PSR output: reads the MHT entirely into memory, extracts PNG steps in parallel."""
+"""Parses PSR output: reads the MHT entirely into memory, extracts PNG steps in parallel.
+
+PSR MHT format: the recording metadata lives in a <script id="myXML" type="text/xml">
+block embedded in the HTML part. Each <EachAction> element contains:
+  - ActionNumber, Time attributes on the tag
+  - <Description> - Hebrew/localized human-readable action description
+  - <Action> - action type (left click, scroll, etc.)
+  - <CursorCoordsXY> - click coordinates
+  - FileDescription attribute - the program name (e.g. "Google Chrome")
+  - <ScreenshotFileName> - which screenshot corresponds to this action
+  - <UIAStack><Level Name="..."> - the UI element name
+
+_extract_step_metadata_xml() parses this directly.
+The old HTML regex fallback (_extract_step_metadata) is kept but used only when no
+XML block is found.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +24,7 @@ import email.policy
 import io
 import json
 import re
+import xml.etree.ElementTree as ET
 import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -183,20 +199,7 @@ def parse_mht(mht_path: Path, output_dir: Path) -> RecordingSession:
 
     # Build steps from in-memory metadata.
     step_meta = _extract_step_metadata(html_text)
-    steps: list[Step] = []
-
-    for seq, img_bytes, location in image_parts:
-        meta = step_meta[seq] if seq < len(step_meta) else {}
-        label = meta.get("label") or _label_from_location(location) or f"Step {seq}"
-        steps.append(Step(
-            index=seq,
-            label=label,
-            image_bytes=img_bytes,
-            timestamp=meta.get("timestamp", ""),
-            ui_element=meta.get("ui_element", ""),
-            program=meta.get("program", ""),
-            action_text=meta.get("action_text", ""),
-        ))
+    steps = _build_steps(image_parts, step_meta)
 
     title = _extract_title(mht_text)
     return RecordingSession(source_zip=mht_path, steps=steps, title=title)
@@ -341,20 +344,7 @@ def _parse_mht_from_bytes(raw: bytes, output_dir: Path) -> RecordingSession:
         executor.map(_write_png, [(seq, img) for seq, img, _ in image_parts])
 
     step_meta = _extract_step_metadata(html_text)
-    steps: list[Step] = []
-
-    for seq, img_bytes, location in image_parts:
-        meta = step_meta[seq] if seq < len(step_meta) else {}
-        label = meta.get("label") or _label_from_location(location) or f"Step {seq}"
-        steps.append(Step(
-            index=seq,
-            label=label,
-            image_bytes=img_bytes,
-            timestamp=meta.get("timestamp", ""),
-            ui_element=meta.get("ui_element", ""),
-            program=meta.get("program", ""),
-            action_text=meta.get("action_text", ""),
-        ))
+    steps = _build_steps(image_parts, step_meta)
 
     title = _extract_title(mht_text)
     return RecordingSession(source_zip=output_dir, steps=steps, title=title)
@@ -364,17 +354,115 @@ def _parse_mht_from_bytes(raw: bytes, output_dir: Path) -> RecordingSession:
 # Internal: metadata extraction
 # ---------------------------------------------------------------------------
 
-def _extract_step_metadata(html: str) -> list[dict]:
-    """Extract per-step metadata from the PSR HTML structure using compiled patterns.
+def _extract_step_metadata_xml(html: str) -> list[dict]:
+    """
+    Extract per-step metadata from the PSR embedded XML block.
 
-    PSR uses patterns like:
-      <p class="step">Step N: <b>Action text</b></p>
-      <dd>...</dd> blocks with timestamps and UI info.
-    Returns a list of dicts, one per detected step (may be shorter than image count).
+    PSR embeds recording data as:
+        <script id="myXML" type="text/xml">
+          <?xml version="1.0" encoding="UTF-8"?>
+          <Report>
+            <UserActionData>
+              <RecordSession ...>
+                <EachAction ActionNumber="1" Time="17:59:58" FileDescription="Google Chrome" ...>
+                  <Description>User left-clicked on ...</Description>
+                  <Action>Left click</Action>
+                  <UIAStack>
+                    <Level Name="Button name" ... />
+                  </UIAStack>
+                  <ScreenshotFileName>screenshot0001.JPEG</ScreenshotFileName>
+                </EachAction>
+              </RecordSession>
+            </UserActionData>
+          </Report>
+        </script>
+
+    Returns a list of dicts keyed by 0-based screenshot index.
+    """
+    # Extract the XML block from inside the <script type="text/xml"> tag
+    xml_match = re.search(
+        r'<script[^>]+type=["\']text/xml["\'][^>]*>\s*(.*?)\s*</script>',
+        html,
+        re.DOTALL | re.IGNORECASE,
+    )
+    if not xml_match:
+        return []
+
+    xml_text = xml_match.group(1).strip()
+    # Strip the <?xml ...?> declaration if present (ElementTree handles it better without)
+    xml_text = re.sub(r'<\?xml[^?]*\?>', '', xml_text, count=1).strip()
+
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return []
+
+    actions = root.findall(".//EachAction")
+    results: list[dict] = []
+
+    for action in actions:
+        # Program name from FileDescription attribute on the EachAction tag
+        program = action.get("FileDescription", "")
+        time_str = action.get("Time", "")
+
+        # Human-readable description (localized, e.g. Hebrew)
+        desc_el = action.find("Description")
+        description = desc_el.text.strip() if desc_el is not None and desc_el.text else ""
+
+        # Action type (e.g. "Left click", "Scroll")
+        action_el = action.find("Action")
+        action_type = action_el.text.strip() if action_el is not None and action_el.text else ""
+
+        # UI element name: deepest Level with a Name attribute in UIAStack
+        ui_name = ""
+        uia_stack = action.find("UIAStack")
+        if uia_stack is not None:
+            levels = uia_stack.findall("Level")
+            for level in levels:
+                name = level.get("Name", "").strip()
+                if name:
+                    ui_name = name  # last non-empty Name = most specific element
+
+        # Screenshot filename (e.g. "screenshot0001.JPEG")
+        screen_el = action.find("ScreenshotFileName")
+        screenshot = screen_el.text.strip() if screen_el is not None and screen_el.text else ""
+
+        # Build a clean label: "Action in UI element"
+        if ui_name and action_type:
+            label = f"{action_type} on '{ui_name}'"
+        elif description:
+            label = description[:120]
+        else:
+            label = action_type or f"Action {action.get('ActionNumber', '?')}"
+
+        results.append({
+            "label": label,
+            "timestamp": time_str,
+            "ui_element": ui_name,
+            "program": program,
+            "action_text": description,
+            "screenshot_filename": screenshot,
+        })
+
+    return results
+
+
+def _extract_step_metadata(html: str) -> list[dict]:
+    """Extract per-step metadata from the PSR HTML/XML structure.
+
+    Tries the embedded XML block first (all modern PSR versions).
+    Falls back to HTML regex patterns for older PSR versions.
+    Returns a list of dicts, one per detected step.
     """
     if not html:
         return []
 
+    # Primary path: parse the embedded XML block
+    xml_results = _extract_step_metadata_xml(html)
+    if xml_results:
+        return xml_results
+
+    # Fallback: HTML regex patterns (older PSR or non-standard formats)
     results: list[dict] = []
 
     for m in _RE_STEP.finditer(html):
@@ -389,6 +477,7 @@ def _extract_step_metadata(html: str) -> list[dict]:
             "ui_element": "",
             "program": prog,
             "action_text": label_text,
+            "screenshot_filename": "",
         })
 
     if not results:
@@ -400,9 +489,59 @@ def _extract_step_metadata(html: str) -> list[dict]:
                 "ui_element": "",
                 "program": "",
                 "action_text": inner,
+                "screenshot_filename": "",
             })
 
     return results
+
+
+def _build_steps(
+    image_parts: list[tuple[int, bytes, str]],
+    step_meta: list[dict],
+) -> list[Step]:
+    """
+    Match image parts to metadata records and return a list of Step objects.
+
+    When XML metadata is present, each record has a 'screenshot_filename' field
+    (e.g. 'screenshot0001.JPEG'). We build a filename->meta lookup so images are
+    matched by name rather than position - this is robust against gaps in the
+    action list (PSR sometimes skips screenshots for intermediate events).
+
+    Falls back to positional matching when filenames are unavailable.
+    """
+    # Build filename lookup from metadata (lowercase, stem-only for tolerance)
+    filename_to_meta: dict[str, dict] = {}
+    for meta in step_meta:
+        fname = meta.get("screenshot_filename", "")
+        if fname:
+            # Normalize: lowercase stem without extension
+            stem = Path(fname).stem.lower()
+            filename_to_meta[stem] = meta
+
+    steps: list[Step] = []
+    for seq, img_bytes, location in image_parts:
+        # Try to match by filename stem derived from MIME Content-Location
+        meta: dict = {}
+        if filename_to_meta:
+            loc_stem = Path(location).stem.lower() if location else ""
+            if loc_stem in filename_to_meta:
+                meta = filename_to_meta[loc_stem]
+        # Positional fallback
+        if not meta and seq < len(step_meta):
+            meta = step_meta[seq]
+
+        label = meta.get("label") or _label_from_location(location) or f"Step {seq}"
+        steps.append(Step(
+            index=seq,
+            label=label,
+            image_bytes=img_bytes,
+            timestamp=meta.get("timestamp", ""),
+            ui_element=meta.get("ui_element", ""),
+            program=meta.get("program", ""),
+            action_text=meta.get("action_text", ""),
+        ))
+
+    return steps
 
 
 def _label_from_location(location: str) -> str:
