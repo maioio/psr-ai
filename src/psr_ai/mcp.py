@@ -508,12 +508,53 @@ def _needs_browser_fallback(text: str, http_status: int | None) -> bool:
     return any(signal in lower for signal in _LOGIN_WALL_SIGNALS)
 
 
-def _fetch_with_browser(url: str, max_chars: int) -> str:
-    """Fetch a page using a headless Chromium browser via Playwright.
+def _resolve_user_data_dir() -> str | None:
+    """Return the local Chrome or Edge user data directory path, or None.
 
-    Returns the visible body text. Raises ImportError when Playwright is not
-    installed so the caller can emit a helpful message instead of crashing.
+    Tries Chrome first, then Edge. Returns None on non-Windows/macOS or when
+    neither directory exists. The caller falls back to an isolated profile when
+    None is returned.
     """
+    import os
+    import sys
+
+    candidates: list[str] = []
+
+    if sys.platform == "win32":
+        local = os.environ.get("LOCALAPPDATA", "")
+        candidates = [
+            os.path.join(local, "Google", "Chrome", "User Data"),
+            os.path.join(local, "Microsoft", "Edge", "User Data"),
+        ]
+    elif sys.platform == "darwin":
+        home = os.path.expanduser("~")
+        candidates = [
+            os.path.join(home, "Library", "Application Support", "Google", "Chrome"),
+            os.path.join(home, "Library", "Application Support", "Microsoft Edge"),
+        ]
+
+    for path in candidates:
+        if os.path.isdir(path):
+            return path
+
+    return None
+
+
+def _fetch_with_browser(url: str, max_chars: int) -> str:
+    """Fetch a page using a Playwright browser, reusing the local user session.
+
+    Strategy:
+      1. Attempt launch_persistent_context with the local Chrome/Edge user data
+         directory so existing authenticated sessions (cookies, localStorage) are
+         available. Uses the "Default" profile inside that directory.
+      2. If the user data dir is not found or the persistent launch fails, fall
+         back to a plain headless Chromium with no session.
+
+    Returns the visible body text (document.body.innerText after a 2-second
+    JS-settle wait). Raises ImportError when Playwright is not installed.
+    """
+    import re
+
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
@@ -522,26 +563,55 @@ def _fetch_with_browser(url: str, max_chars: int) -> str:
             "Install it with: pip install playwright && playwright install chromium"
         ) from exc
 
+    _UA = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    )
+
+    user_data_dir = _resolve_user_data_dir()
+    text = ""
+
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True)
-        page = browser.new_page(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            )
-        )
-        try:
+        ctx = None
+        browser = None
+
+        if user_data_dir is not None:
+            try:
+                ctx = pw.chromium.launch_persistent_context(
+                    user_data_dir,
+                    headless=True,
+                    user_agent=_UA,
+                    args=["--profile-directory=Default"],
+                )
+                page = ctx.new_page()
+                page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+                page.wait_for_timeout(2000)
+                text = page.evaluate("() => document.body.innerText") or ""
+            except Exception:
+                # Persistent context failed (e.g. profile locked by running Chrome).
+                # Close whatever opened and fall through to the isolated fallback.
+                if ctx is not None:
+                    try:
+                        ctx.close()
+                    except Exception:
+                        pass
+                ctx = None
+                text = ""
+
+        if not text and ctx is None:
+            browser = pw.chromium.launch(headless=True)
+            page = browser.new_page(user_agent=_UA)
             page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-            # Wait briefly for JS-rendered content to settle.
             page.wait_for_timeout(2000)
-            text: str = page.evaluate("() => document.body.innerText") or ""
-        finally:
+            text = page.evaluate("() => document.body.innerText") or ""
+
+        if ctx is not None:
+            ctx.close()
+        if browser is not None:
             browser.close()
 
-    import re
-    text = re.sub(r"\n{3,}", "\n\n", text.strip())
-    return text[:max_chars]
+    return re.sub(r"\n{3,}", "\n\n", text.strip())[:max_chars]
 
 
 def _tool_psr_fetch_link(args: dict[str, Any]) -> str:
@@ -579,35 +649,54 @@ def _tool_psr_fetch_link(args: dict[str, Any]) -> str:
 
     if is_social:
         ytdlp = shutil.which("yt-dlp")
-        if ytdlp is None:
+        ytdlp_failure: str | None = None
+
+        if ytdlp is not None:
+            cmd = [
+                ytdlp,
+                "--skip-download",
+                "--write-info-json",
+                "--write-auto-sub",
+                "--sub-format", "vtt",
+                "--print", "%(title)s\n%(uploader)s\n%(description)s\n%(webpage_url)s",
+                "--no-playlist",
+                url,
+            ]
+            try:
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                output = result.stdout.strip()
+                if output and result.returncode == 0:
+                    return output[:max_chars]
+                # yt-dlp failed or returned empty output; record reason and fall through.
+                ytdlp_failure = result.stderr.strip()[:500] or f"exit code {result.returncode}"
+            except subprocess.TimeoutExpired:
+                ytdlp_failure = "yt-dlp timed out"
+        else:
+            ytdlp_failure = "yt-dlp is not installed"
+
+        # yt-dlp unavailable or failed: try browser fallback with local session.
+        try:
+            browser_text = _fetch_with_browser(url, max_chars)
+            note = f"[yt-dlp unavailable: {ytdlp_failure}; used browser fallback]\n\n"
+            if _needs_browser_fallback(browser_text, None):
+                note += "[Note: page may require authentication]\n\n"
+            return f"URL: {url}\n\n{note}{browser_text}"
+        except ImportError as exc:
             return (
-                "yt-dlp is not installed or not on PATH. "
-                "Install it with: pip install yt-dlp\n"
+                f"yt-dlp failed ({ytdlp_failure}) and browser fallback is unavailable: {exc}\n"
+                f"Install Playwright: pip install playwright && playwright install chromium\n"
                 f"URL: {url}"
             )
-        cmd = [
-            ytdlp,
-            "--skip-download",
-            "--write-info-json",
-            "--write-auto-sub",
-            "--sub-format", "vtt",
-            "--print", "%(title)s\n%(uploader)s\n%(description)s\n%(webpage_url)s",
-            "--no-playlist",
-            url,
-        ]
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=30,
+        except Exception as exc:
+            return (
+                f"yt-dlp failed ({ytdlp_failure}) and browser fallback also failed: {exc}\n"
+                f"URL: {url}"
             )
-            output = result.stdout.strip()
-            if not output and result.returncode != 0:
-                return f"yt-dlp error (exit {result.returncode}):\n{result.stderr.strip()[:1000]}"
-            return output[:max_chars]
-        except subprocess.TimeoutExpired:
-            return f"yt-dlp timed out fetching: {url}"
 
     # Static fetch via urllib.
     req = urllib.request.Request(

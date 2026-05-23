@@ -369,20 +369,88 @@ class TestPsrFetchLink:
         # url header (~30 chars) + max_chars body = well under 200
         assert len(text) <= 200
 
-    def test_ytdlp_missing_returns_message(self, monkeypatch):
+    def test_ytdlp_missing_falls_through_to_browser(self, monkeypatch):
+        """When yt-dlp is absent, the tool falls through to the browser fallback."""
+        import psr_ai.mcp as mcp_mod
         import shutil as _shutil
-        with patch.object(_shutil, "which", return_value=None):
+
+        browser_text = "Instagram profile content loaded via browser. " * 10
+
+        with (
+            patch.object(_shutil, "which", return_value=None),
+            patch.object(mcp_mod, "_fetch_with_browser", return_value=browser_text) as mock_browser,
+        ):
             resp = _call(
                 _req(
                     "tools/call",
-                    {"name": "psr_fetch_link", "arguments": {"url": "https://www.youtube.com/watch?v=test"}},
+                    {"name": "psr_fetch_link", "arguments": {"url": "https://www.instagram.com/test"}},
                 ),
                 monkeypatch,
             )
 
+        mock_browser.assert_called_once()
         assert "error" not in resp
         text = resp["result"]["content"][0]["text"]
-        assert "yt-dlp" in text
+        assert "Instagram profile content" in text
+        assert "yt-dlp" in text  # failure notice is still included
+
+    def test_ytdlp_failure_falls_through_to_browser(self, monkeypatch):
+        """When yt-dlp exits non-zero, the tool falls through to the browser fallback."""
+        import psr_ai.mcp as mcp_mod
+        import shutil as _shutil
+
+        browser_text = "Video metadata loaded via browser fallback. " * 10
+        fake_result = MagicMock()
+        fake_result.returncode = 1
+        fake_result.stdout = ""
+        fake_result.stderr = "Extractor broken"
+
+        with (
+            patch.object(_shutil, "which", return_value="/usr/bin/yt-dlp"),
+            patch("subprocess.run", return_value=fake_result),
+            patch.object(mcp_mod, "_fetch_with_browser", return_value=browser_text) as mock_browser,
+        ):
+            resp = _call(
+                _req(
+                    "tools/call",
+                    {"name": "psr_fetch_link", "arguments": {"url": "https://www.youtube.com/watch?v=abc"}},
+                ),
+                monkeypatch,
+            )
+
+        mock_browser.assert_called_once()
+        assert "error" not in resp
+        text = resp["result"]["content"][0]["text"]
+        assert "Video metadata loaded" in text
+        assert "yt-dlp" in text  # failure notice present
+
+    def test_ytdlp_success_does_not_call_browser(self, monkeypatch):
+        """When yt-dlp succeeds, the browser fallback must NOT be called."""
+        import psr_ai.mcp as mcp_mod
+        import shutil as _shutil
+
+        fake_result = MagicMock()
+        fake_result.returncode = 0
+        fake_result.stdout = "My Video\nUploader Name\nSome description\nhttps://youtu.be/abc"
+        fake_result.stderr = ""
+
+        with (
+            patch.object(_shutil, "which", return_value="/usr/bin/yt-dlp"),
+            patch("subprocess.run", return_value=fake_result),
+            patch.object(mcp_mod, "_fetch_with_browser") as mock_browser,
+        ):
+            resp = _call(
+                _req(
+                    "tools/call",
+                    {"name": "psr_fetch_link", "arguments": {"url": "https://youtu.be/abc"}},
+                ),
+                monkeypatch,
+            )
+
+        mock_browser.assert_not_called()
+        assert "error" not in resp
+        text = resp["result"]["content"][0]["text"]
+        assert "My Video" in text
 
     def test_fetch_failure_returns_message(self, monkeypatch):
         with patch("urllib.request.urlopen", side_effect=OSError("connection refused")):
@@ -527,6 +595,110 @@ class TestPsrFetchLink:
 
         mock_browser.assert_not_called()
         assert "error" not in resp
+
+
+# ---------------------------------------------------------------------------
+# 6b. _resolve_user_data_dir and persistent-context browser fallback
+# ---------------------------------------------------------------------------
+
+class TestResolveBrowserSession:
+    def test_returns_existing_path(self, tmp_path):
+        import psr_ai.mcp as mcp_mod
+        import sys
+
+        fake_dir = tmp_path / "Chrome" / "User Data"
+        fake_dir.mkdir(parents=True)
+
+        platform_attr = "win32" if sys.platform != "darwin" else "darwin"
+        env_key = "LOCALAPPDATA" if platform_attr == "win32" else None
+
+        with patch.object(mcp_mod, "_resolve_user_data_dir", return_value=str(fake_dir)):
+            result = mcp_mod._resolve_user_data_dir()
+
+        assert result == str(fake_dir)
+
+    def test_returns_none_when_no_dir_exists(self, monkeypatch):
+        import psr_ai.mcp as mcp_mod
+        import os
+
+        with patch.object(os.path, "isdir", return_value=False):
+            result = mcp_mod._resolve_user_data_dir()
+
+        assert result is None
+
+    def test_fetch_with_browser_uses_persistent_context_when_dir_found(self):
+        """When a user data dir is found, launch_persistent_context is called."""
+        import psr_ai.mcp as mcp_mod
+
+        fake_text = "Authenticated page content. " * 20
+        mock_page = MagicMock()
+        mock_page.evaluate.return_value = fake_text
+        mock_ctx = MagicMock()
+        mock_ctx.new_page.return_value = mock_page
+
+        mock_pw = MagicMock()
+        mock_pw.chromium.launch_persistent_context.return_value = mock_ctx
+
+        with (
+            patch.object(mcp_mod, "_resolve_user_data_dir", return_value="/fake/user/data"),
+            patch("playwright.sync_api.sync_playwright") as mock_sync_pw,
+        ):
+            mock_sync_pw.return_value.__enter__.return_value = mock_pw
+            mock_sync_pw.return_value.__exit__.return_value = False
+            result = mcp_mod._fetch_with_browser("https://instagram.com/test", 8000)
+
+        mock_pw.chromium.launch_persistent_context.assert_called_once()
+        assert "Authenticated page content" in result
+
+    def test_fetch_with_browser_falls_back_to_isolated_when_persistent_fails(self):
+        """When persistent context raises, isolated headless browser is used."""
+        import psr_ai.mcp as mcp_mod
+
+        fake_text = "Isolated browser content. " * 20
+        mock_page = MagicMock()
+        mock_page.evaluate.return_value = fake_text
+        mock_browser = MagicMock()
+        mock_browser.new_page.return_value = mock_page
+
+        mock_pw = MagicMock()
+        mock_pw.chromium.launch_persistent_context.side_effect = RuntimeError("profile locked")
+        mock_pw.chromium.launch.return_value = mock_browser
+
+        with (
+            patch.object(mcp_mod, "_resolve_user_data_dir", return_value="/fake/user/data"),
+            patch("playwright.sync_api.sync_playwright") as mock_sync_pw,
+        ):
+            mock_sync_pw.return_value.__enter__.return_value = mock_pw
+            mock_sync_pw.return_value.__exit__.return_value = False
+            result = mcp_mod._fetch_with_browser("https://example.com", 8000)
+
+        mock_pw.chromium.launch.assert_called_once()
+        assert "Isolated browser content" in result
+
+    def test_fetch_with_browser_uses_isolated_when_no_user_dir(self):
+        """When no user data dir exists, isolated headless browser is used."""
+        import psr_ai.mcp as mcp_mod
+
+        fake_text = "Public page content. " * 20
+        mock_page = MagicMock()
+        mock_page.evaluate.return_value = fake_text
+        mock_browser = MagicMock()
+        mock_browser.new_page.return_value = mock_page
+
+        mock_pw = MagicMock()
+        mock_pw.chromium.launch.return_value = mock_browser
+
+        with (
+            patch.object(mcp_mod, "_resolve_user_data_dir", return_value=None),
+            patch("playwright.sync_api.sync_playwright") as mock_sync_pw,
+        ):
+            mock_sync_pw.return_value.__enter__.return_value = mock_pw
+            mock_sync_pw.return_value.__exit__.return_value = False
+            result = mcp_mod._fetch_with_browser("https://example.com", 8000)
+
+        mock_pw.chromium.launch_persistent_context.assert_not_called()
+        mock_pw.chromium.launch.assert_called_once()
+        assert "Public page content" in result
 
 
 # ---------------------------------------------------------------------------
