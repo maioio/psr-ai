@@ -1150,3 +1150,587 @@ def watch(
     result = run_watcher(config, echo_fn=_echo)
     _echo(result.report())
     raise SystemExit(0 if result.success else 1)
+
+
+# ------------------------------------------------------------------
+# sa browse
+# ------------------------------------------------------------------
+
+@main.command()
+@click.argument("url")
+@click.option(
+    "--output", "-o",
+    default=None,
+    type=click.Path(),
+    help="Output directory. Defaults to a timestamped directory in psr_output/.",
+)
+@click.option(
+    "--wait-for",
+    default=None,
+    help="CSS selector to wait for before capturing (e.g. '.content-loaded').",
+)
+@click.option(
+    "--delay",
+    default=1.5,
+    show_default=True,
+    help="Seconds to wait for JS to settle after page load.",
+)
+def browse(url: str, output: str | None, wait_for: str | None, delay: float) -> None:
+    """Capture a full-page screenshot and raw HTML from a URL.
+
+    Unlike `sa capture`, this also saves the raw HTML source alongside the image,
+    making it useful for downstream scraping or archiving.
+
+    Examples:
+      sa browse https://example.com
+      sa browse https://example.com --wait-for ".article-body"
+    """
+    from psr_ai.core.scraper import browse_page
+
+    out_dir = Path(output) if output else default_output_dir() / "browse"
+    try:
+        result = browse_page(url, out_dir, wait_for=wait_for, delay=delay)
+        _echo(result.report())
+    except ImportError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+
+
+# ------------------------------------------------------------------
+# sa scrape
+# ------------------------------------------------------------------
+
+@main.command()
+@click.argument("url")
+@click.argument("selector")
+@click.option(
+    "--output", "-o",
+    default=None,
+    type=click.Path(),
+    help="Output directory. Defaults to a timestamped directory in psr_output/.",
+)
+@click.option(
+    "--wait-for",
+    default=None,
+    help="CSS selector to wait for before extracting (e.g. '.results-loaded').",
+)
+@click.option(
+    "--no-screenshot",
+    "skip_screenshot",
+    is_flag=True,
+    default=False,
+    help="Skip taking a screenshot alongside the scraped data.",
+)
+def scrape(
+    url: str,
+    selector: str,
+    output: str | None,
+    wait_for: str | None,
+    skip_screenshot: bool,
+) -> None:
+    """Extract elements matching a CSS selector and save as JSON.
+
+    SELECTOR is any valid CSS selector (e.g. 'article.post', 'table tr', '.product-card').
+
+    Examples:
+      sa scrape https://news.ycombinator.com "tr.athing"
+      sa scrape https://example.com ".product" --wait-for ".loaded"
+    """
+    from psr_ai.core.scraper import scrape_page
+
+    out_dir = Path(output) if output else default_output_dir() / "scrape"
+    try:
+        result = scrape_page(
+            url, selector, out_dir,
+            wait_for=wait_for,
+            screenshot=not skip_screenshot,
+        )
+        _echo(result.report())
+    except ImportError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+
+
+# ------------------------------------------------------------------
+# sa form
+# ------------------------------------------------------------------
+
+@main.command()
+@click.argument("url")
+@click.option(
+    "--output", "-o",
+    default=None,
+    type=click.Path(),
+    help="Output directory.",
+)
+@click.option(
+    "--wait-for",
+    default=None,
+    help="CSS selector to wait for before capturing.",
+)
+def form(url: str, output: str | None, wait_for: str | None) -> None:
+    """Browse to a URL and capture a full-page screenshot (alias for sa browse).
+
+    Useful for capturing form pages before filling them in.
+
+    Examples:
+      sa form https://example.com/contact
+    """
+    from psr_ai.core.scraper import browse_page
+
+    out_dir = Path(output) if output else default_output_dir() / "form"
+    try:
+        result = browse_page(url, out_dir, wait_for=wait_for)
+        _echo(result.report())
+    except ImportError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+
+
+# ------------------------------------------------------------------
+# sa codegen
+# ------------------------------------------------------------------
+
+@main.command()
+@click.argument("url")
+@click.option(
+    "--output", "-o",
+    default=None,
+    type=click.Path(),
+    help="Output .py test file path. Defaults to codegen_test.py in psr_output/.",
+)
+@click.option(
+    "--browser", "-b",
+    default="chromium",
+    show_default=True,
+    type=click.Choice(["chromium", "firefox", "webkit"]),
+    help="Browser engine to use for recording.",
+)
+@click.option(
+    "--data-dir",
+    default=None,
+    type=click.Path(),
+    help="Directory to save the codegen_data.json step log.",
+)
+def codegen(
+    url: str,
+    output: str | None,
+    browser: str,
+    data_dir: str | None,
+) -> None:
+    """Record browser interactions and generate a Playwright test file.
+
+    Opens a browser window at URL. Interact with the page normally.
+    When you close the browser, all interactions are saved as a runnable pytest file.
+
+    Requires: pip install psr-ai[capture]
+
+    Examples:
+      sa codegen https://example.com
+      sa codegen https://myapp.com/login --output tests/test_login.py
+      sa codegen https://example.com --browser firefox
+    """
+    from psr_ai.core.codegen import record_session
+
+    if output:
+        out_file = Path(output)
+    else:
+        out_file = default_output_dir() / "codegen_test.py"
+
+    out_dir = Path(data_dir) if data_dir else out_file.parent
+
+    try:
+        result = record_session(url, out_file, browser=browser, output_dir=out_dir, echo_fn=_echo)
+        _echo(result.report())
+    except ImportError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+
+
+# ------------------------------------------------------------------
+# sa intercept
+# ------------------------------------------------------------------
+
+@main.command()
+@click.argument("url")
+@click.option(
+    "--output", "-o",
+    default=None,
+    type=click.Path(),
+    help="Output directory for the network log and screenshot.",
+)
+@click.option(
+    "--block",
+    "block_domains",
+    multiple=True,
+    help="Domain to block (can be repeated). E.g. --block ads.example.com",
+)
+@click.option(
+    "--no-screenshot",
+    "skip_screenshot",
+    is_flag=True,
+    default=False,
+    help="Skip taking a screenshot.",
+)
+def intercept(
+    url: str,
+    output: str | None,
+    block_domains: tuple,
+    skip_screenshot: bool,
+) -> None:
+    """Load a page and log all network requests to JSON.
+
+    Optionally block specific domains (useful for ad/tracker removal).
+    The full request log is saved as <stem>_network.json.
+
+    Examples:
+      sa intercept https://example.com
+      sa intercept https://example.com --block ads.example.com --block tracker.io
+    """
+    from psr_ai.core.scraper import intercept_network
+
+    out_dir = Path(output) if output else default_output_dir() / "intercept"
+    try:
+        result = intercept_network(
+            url, out_dir,
+            block_domains=list(block_domains),
+            screenshot=not skip_screenshot,
+        )
+        _echo(result.report())
+    except ImportError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+
+
+# ------------------------------------------------------------------
+# sa test-all
+# ------------------------------------------------------------------
+
+@main.command("test-all")
+@click.argument("test_file", type=click.Path(exists=True, dir_okay=False))
+@click.option(
+    "--output", "-o",
+    default=None,
+    type=click.Path(),
+    help="Output directory for per-browser HTML reports.",
+)
+@click.option(
+    "--browsers",
+    default="chromium,firefox,webkit",
+    show_default=True,
+    help="Comma-separated list of browsers to test on.",
+)
+def test_all(test_file: str, output: str | None, browsers: str) -> None:
+    """Run a Playwright test file across multiple browser engines in sequence.
+
+    Generates one HTML report per browser engine in the output directory.
+    Requires pytest-playwright and pytest-html:
+      pip install psr-ai[capture] pytest-playwright pytest-html
+
+    Examples:
+      sa test-all tests/test_ui.py
+      sa test-all tests/test_ui.py --browsers chromium,firefox
+    """
+    from psr_ai.core.scraper import run_parallel_tests
+
+    browser_list = [b.strip() for b in browsers.split(",") if b.strip()]
+    out_dir = Path(output) if output else default_output_dir() / "test_all"
+    try:
+        result = run_parallel_tests(Path(test_file), browser_list, out_dir, echo_fn=_echo)
+        _echo(result.report())
+        raise SystemExit(0 if result.all_passed else 1)
+    except ImportError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+
+
+# ------------------------------------------------------------------
+# sa accessibility
+# ------------------------------------------------------------------
+
+@main.command()
+@click.argument("url")
+@click.option(
+    "--output", "-o",
+    default=None,
+    type=click.Path(),
+    help="Output directory for the accessibility report.",
+)
+def accessibility(url: str, output: str | None) -> None:
+    """Run a lightweight accessibility audit against a URL.
+
+    Checks for: missing image alt text, unlabeled inputs, empty buttons,
+    empty links, missing document title, and skipped heading levels.
+
+    Saves both a Markdown report and a JSON violation log.
+
+    Requires: pip install psr-ai[capture]
+
+    Examples:
+      sa accessibility https://example.com
+    """
+    from psr_ai.core.scraper import run_accessibility_audit
+
+    out_dir = Path(output) if output else default_output_dir() / "accessibility"
+    try:
+        result = run_accessibility_audit(url, out_dir, echo_fn=_echo)
+        _echo(result.report())
+    except ImportError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+
+
+# ------------------------------------------------------------------
+# sa trace
+# ------------------------------------------------------------------
+
+@main.command()
+@click.argument("url")
+@click.option(
+    "--output", "-o",
+    default=None,
+    type=click.Path(),
+    help="Output directory for the trace ZIP and screenshot.",
+)
+@click.option(
+    "--no-screenshot",
+    "skip_screenshot",
+    is_flag=True,
+    default=False,
+    help="Skip the accompanying screenshot.",
+)
+def trace(url: str, output: str | None, skip_screenshot: bool) -> None:
+    """Capture a Playwright trace (network + DOM snapshots) while loading a URL.
+
+    The trace ZIP can be inspected with `sa trace-show <trace.zip>` or via
+    https://trace.playwright.dev
+
+    Requires: pip install psr-ai[capture]
+
+    Examples:
+      sa trace https://example.com
+      sa trace-show psr_output/trace/example_com_trace.zip
+    """
+    from psr_ai.core.scraper import capture_trace
+
+    out_dir = Path(output) if output else default_output_dir() / "trace"
+    try:
+        result = capture_trace(url, out_dir, screenshot=not skip_screenshot, echo_fn=_echo)
+        _echo(result.report())
+    except ImportError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+
+
+# ------------------------------------------------------------------
+# sa trace-show
+# ------------------------------------------------------------------
+
+@main.command("trace-show")
+@click.argument("trace_path", type=click.Path(exists=True, dir_okay=False))
+def trace_show(trace_path: str) -> None:
+    """Open a Playwright trace ZIP in the trace viewer.
+
+    Requires: pip install psr-ai[capture]
+
+    Examples:
+      sa trace-show psr_output/trace/example_com_trace.zip
+    """
+    from psr_ai.core.scraper import show_trace
+
+    try:
+        show_trace(Path(trace_path))
+    except ImportError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+
+
+# ------------------------------------------------------------------
+# sa scrape-species
+# ------------------------------------------------------------------
+
+@main.command("scrape-species")
+@click.argument("query")
+@click.option(
+    "--output", "-o",
+    default=None,
+    type=click.Path(),
+    help="Output directory for the species JSON data.",
+)
+@click.option(
+    "--sources",
+    default="inat,gbif,bugguide",
+    show_default=True,
+    help="Comma-separated list of sources to query.",
+)
+@click.option(
+    "--limit",
+    default=10,
+    show_default=True,
+    help="Maximum results per source.",
+)
+def scrape_species(query: str, output: str | None, sources: str, limit: int) -> None:
+    """Look up a species across iNaturalist, GBIF, and BugGuide.
+
+    QUERY can be a scientific name (e.g. 'Phasma gigas') or a common name
+    (e.g. 'stick insect'). Results are printed and optionally saved as JSON.
+
+    Examples:
+      sa scrape-species "stick insect"
+      sa scrape-species "Phasma gigas" --sources inat,gbif
+      sa scrape-species "Mantis religiosa" --output psr_output/species
+    """
+    from psr_ai.core.species import lookup_species
+
+    out_dir = Path(output) if output else None
+    source_list = [s.strip() for s in sources.split(",") if s.strip()]
+    try:
+        result = lookup_species(query, output_dir=out_dir, sources=source_list, limit=limit)
+        _echo(result.report())
+        if result.error:
+            raise SystemExit(1)
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+
+
+# ------------------------------------------------------------------
+# sa download
+# ------------------------------------------------------------------
+
+@main.command()
+@click.argument("url")
+@click.option(
+    "--output", "-o",
+    default=None,
+    type=click.Path(),
+    help="Output directory. Defaults to a timestamped directory in psr_output/.",
+)
+@click.option(
+    "--audio",
+    "audio_only",
+    is_flag=True,
+    default=False,
+    help="Extract audio only (saved as MP3).",
+)
+@click.option(
+    "--quality", "-q",
+    default=None,
+    help="Max video resolution (e.g. 720, 1080). Omit for best available.",
+)
+@click.option(
+    "--subtitles",
+    is_flag=True,
+    default=False,
+    help="Download subtitles alongside the video.",
+)
+def download(
+    url: str,
+    output: str | None,
+    audio_only: bool,
+    quality: str | None,
+    subtitles: bool,
+) -> None:
+    """Download a video or audio file from any supported URL.
+
+    Uses yt-dlp under the hood; falls back to gallery-dl for image galleries.
+    Supports YouTube, Vimeo, Twitter/X, Reddit, TikTok, Instagram, and more.
+
+    Requires: pip install psr-ai[download]
+
+    Examples:
+      sa download https://www.youtube.com/watch?v=dQw4w9WgXcQ
+      sa download https://www.youtube.com/watch?v=dQw4w9WgXcQ --audio
+      sa download https://www.youtube.com/watch?v=dQw4w9WgXcQ --quality 720
+    """
+    from psr_ai.core.downloader import download_media
+
+    out_dir = Path(output) if output else default_output_dir() / "downloads"
+    try:
+        result = download_media(
+            url, out_dir,
+            audio_only=audio_only,
+            quality=quality,
+            subtitles=subtitles,
+            echo_fn=_echo,
+        )
+        _echo(result.report())
+        raise SystemExit(0 if result.success else 1)
+    except ImportError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+
+
+# ------------------------------------------------------------------
+# sa download-profile
+# ------------------------------------------------------------------
+
+@main.command("download-profile")
+@click.argument("url")
+@click.option(
+    "--output", "-o",
+    default=None,
+    type=click.Path(),
+    help="Output directory.",
+)
+@click.option(
+    "--limit",
+    default=None,
+    type=int,
+    help="Maximum number of items to download.",
+)
+def download_profile(url: str, output: str | None, limit: int | None) -> None:
+    """Download all media from a user profile or channel.
+
+    Uses gallery-dl if available, then yt-dlp as fallback.
+    Useful for archiving Instagram, Twitter/X, Flickr, DeviantArt, and similar profiles.
+
+    Requires: pip install psr-ai[download]
+
+    Examples:
+      sa download-profile https://www.instagram.com/example_user/
+      sa download-profile https://twitter.com/example_user --limit 50
+    """
+    from psr_ai.core.downloader import download_profile as _download_profile
+
+    out_dir = Path(output) if output else default_output_dir() / "downloads"
+    try:
+        result = _download_profile(url, out_dir, limit=limit, echo_fn=_echo)
+        _echo(result.report())
+        raise SystemExit(0 if result.success else 1)
+    except ImportError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
