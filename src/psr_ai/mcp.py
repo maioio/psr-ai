@@ -484,28 +484,43 @@ def _strip_html(html: str) -> str:
 
 
 _LOGIN_WALL_SIGNALS = (
-    "log in",
-    "sign in",
-    "sign up to",
-    "create an account",
-    "access denied",
     "please enable javascript",
     "enable cookies",
     "verify you are human",
     "your connection was blocked",
 )
 
+# Signals that indicate the *entire page* is a login gate (not just nav links).
+# Checked only when the body is short, to avoid false positives on pages that
+# contain "log in" only in their navigation footer.
+_LOGIN_GATE_SIGNALS = (
+    "sign up to",
+    "create an account",
+    "access denied",
+)
+
 _BROWSER_FALLBACK_MIN_CHARS = 200
 
 
 def _needs_browser_fallback(text: str, http_status: int | None) -> bool:
-    """Return True when the static fetch likely hit a JS wall or auth gate."""
+    """Return True when the fetch likely hit a JS wall or hard auth gate.
+
+    A page that merely contains navigation "Log in" / "Sign in" links is NOT
+    considered a login wall -- only pages where those phrases dominate the
+    content (i.e. the body is short) or where harder signals are present.
+    """
     if http_status is not None and http_status in (401, 403, 429):
         return True
-    if len(text) < _BROWSER_FALLBACK_MIN_CHARS:
-        return True
     lower = text.lower()
-    return any(signal in lower for signal in _LOGIN_WALL_SIGNALS)
+    # Hard signals: always trigger regardless of length.
+    if any(signal in lower for signal in _LOGIN_WALL_SIGNALS):
+        return True
+    # Soft gate signals: only trigger when the page body is thin.
+    if len(text) < _BROWSER_FALLBACK_MIN_CHARS:
+        if any(signal in lower for signal in _LOGIN_GATE_SIGNALS):
+            return True
+        return True  # thin page with no real content
+    return False
 
 
 def _resolve_user_data_dir() -> str | None:

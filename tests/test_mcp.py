@@ -512,10 +512,11 @@ class TestPsrFetchLink:
         assert "Protected page content" in text
 
     def test_login_wall_signal_triggers_browser_fallback(self, monkeypatch):
-        """A page body containing 'log in' triggers the fallback even if not too short."""
+        """A short page dominated by hard login-wall signals triggers the fallback."""
         import psr_ai.mcp as mcp_mod
 
-        gate_html = (b"<html><body>" + b"Log in to continue. " * 15 + b"</body></html>")
+        # "please enable javascript" is a hard signal that always triggers.
+        gate_html = b"<html><body><p>Please enable JavaScript to continue.</p></body></html>"
         browser_text = "Actual page body after login wall bypassed. " * 10
 
         with (
@@ -531,6 +532,33 @@ class TestPsrFetchLink:
         assert "error" not in resp
         text = resp["result"]["content"][0]["text"]
         assert "Actual page body" in text
+
+    def test_nav_login_links_do_not_trigger_fallback(self, monkeypatch):
+        """A rich page that merely contains nav 'Log in' links must NOT trigger the fallback."""
+        import psr_ai.mcp as mcp_mod
+
+        # Simulate an Instagram-style public profile: real content + nav login links.
+        profile_content = (
+            b"<html><body>"
+            b"<p>Username: testuser</p>"
+            b"<p>100 posts, 500 followers, 200 following</p>"
+            b"<p>Bio: some interesting bio text here for this user account</p>"
+            + b"<p>More profile content.</p>" * 10
+            + b"<a href='/login'>Log In</a><a href='/signup'>Sign Up</a>"
+            b"</body></html>"
+        )
+
+        with (
+            patch("urllib.request.urlopen", return_value=_fake_urlopen(profile_content)),
+            patch.object(mcp_mod, "_fetch_with_browser") as mock_browser,
+        ):
+            resp = _call(
+                _req("tools/call", {"name": "psr_fetch_link", "arguments": {"url": "http://social.example/profile"}}),
+                monkeypatch,
+            )
+
+        mock_browser.assert_not_called()
+        assert "error" not in resp
 
     def test_playwright_missing_returns_graceful_notice(self, monkeypatch):
         """If Playwright is not installed the tool returns a notice, not an error."""
