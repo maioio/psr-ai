@@ -447,18 +447,120 @@ def _capture_screen_bytes() -> bytes:
     )
 
 
+def _strip_html(html: str) -> str:
+    """Strip HTML tags and return readable plain text.
+
+    Skips script/style/noscript blocks entirely. Collapses excess blank lines.
+    """
+    import re
+    from html.parser import HTMLParser
+
+    class _Parser(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__()
+            self._parts: list[str] = []
+            self._skip = False
+
+        def handle_starttag(self, tag: str, attrs: list) -> None:
+            if tag in ("script", "style", "noscript"):
+                self._skip = True
+
+        def handle_endtag(self, tag: str) -> None:
+            if tag in ("script", "style", "noscript"):
+                self._skip = False
+
+        def handle_data(self, data: str) -> None:
+            if not self._skip:
+                stripped = data.strip()
+                if stripped:
+                    self._parts.append(stripped)
+
+        def text(self) -> str:
+            return "\n".join(self._parts)
+
+    p = _Parser()
+    p.feed(html)
+    return re.sub(r"\n{3,}", "\n\n", p.text())
+
+
+_LOGIN_WALL_SIGNALS = (
+    "log in",
+    "sign in",
+    "sign up to",
+    "create an account",
+    "access denied",
+    "please enable javascript",
+    "enable cookies",
+    "verify you are human",
+    "your connection was blocked",
+)
+
+_BROWSER_FALLBACK_MIN_CHARS = 200
+
+
+def _needs_browser_fallback(text: str, http_status: int | None) -> bool:
+    """Return True when the static fetch likely hit a JS wall or auth gate."""
+    if http_status is not None and http_status in (401, 403, 429):
+        return True
+    if len(text) < _BROWSER_FALLBACK_MIN_CHARS:
+        return True
+    lower = text.lower()
+    return any(signal in lower for signal in _LOGIN_WALL_SIGNALS)
+
+
+def _fetch_with_browser(url: str, max_chars: int) -> str:
+    """Fetch a page using a headless Chromium browser via Playwright.
+
+    Returns the visible body text. Raises ImportError when Playwright is not
+    installed so the caller can emit a helpful message instead of crashing.
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as exc:
+        raise ImportError(
+            "Playwright is required for browser-based fetching. "
+            "Install it with: pip install playwright && playwright install chromium"
+        ) from exc
+
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        page = browser.new_page(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            )
+        )
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+            # Wait briefly for JS-rendered content to settle.
+            page.wait_for_timeout(2000)
+            text: str = page.evaluate("() => document.body.innerText") or ""
+        finally:
+            browser.close()
+
+    import re
+    text = re.sub(r"\n{3,}", "\n\n", text.strip())
+    return text[:max_chars]
+
+
 def _tool_psr_fetch_link(args: dict[str, Any]) -> str:
     """Fetch structured content from a URL and return a clean text block.
 
-    Social/video URLs (YouTube, Instagram, TikTok) are handled by yt-dlp
-    (subprocess call). All other URLs are fetched with urllib and HTML tags
-    are stripped to produce readable plain text.
+    Fetch strategy (automatic, in order):
+      1. Social/video URLs (YouTube, Instagram, TikTok): yt-dlp subprocess.
+      2. All other URLs: urllib static fetch + HTML strip.
+      3. Auto-fallback: if the static response is thin, gated, or blocked
+         (login wall, JS-only SPA, HTTP 403/429), retry with a headless
+         Chromium browser via Playwright.
+
+    Playwright and yt-dlp are optional; their absence is reported gracefully.
     """
     import re
     import shutil
     import subprocess
     import urllib.request
-    from html.parser import HTMLParser
+    from urllib.error import HTTPError
 
     url: str = args.get("url", "").strip()
     if not url:
@@ -507,54 +609,46 @@ def _tool_psr_fetch_link(args: dict[str, Any]) -> str:
         except subprocess.TimeoutExpired:
             return f"yt-dlp timed out fetching: {url}"
 
-    # Generic URL: fetch HTML and strip tags.
-    class _StripHTML(HTMLParser):
-        def __init__(self) -> None:
-            super().__init__()
-            self._parts: list[str] = []
-            self._skip = False
-
-        def handle_starttag(self, tag: str, attrs: list) -> None:
-            if tag in ("script", "style", "noscript"):
-                self._skip = True
-
-        def handle_endtag(self, tag: str) -> None:
-            if tag in ("script", "style", "noscript"):
-                self._skip = False
-
-        def handle_data(self, data: str) -> None:
-            if not self._skip:
-                stripped = data.strip()
-                if stripped:
-                    self._parts.append(stripped)
-
-        def text(self) -> str:
-            return "\n".join(self._parts)
-
+    # Static fetch via urllib.
     req = urllib.request.Request(
         url,
         headers={"User-Agent": "Mozilla/5.0 (compatible; psr-ai/1.0)"},
     )
+    http_status: int | None = None
+    static_text = ""
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
-            charset = "utf-8"
-            ct = resp.headers.get_content_charset()
-            if ct:
-                charset = ct
+            http_status = resp.status
+            charset = resp.headers.get_content_charset() or "utf-8"
             html = resp.read(512_000).decode(charset, errors="replace")
+        static_text = _strip_html(html)
+    except HTTPError as exc:
+        http_status = exc.code
     except Exception as exc:
         return f"Failed to fetch {url}: {exc}"
 
-    parser = _StripHTML()
-    parser.feed(html)
-    text = parser.text()
+    # Check whether we need to escalate to the browser fallback.
+    if _needs_browser_fallback(static_text, http_status):
+        try:
+            browser_text = _fetch_with_browser(url, max_chars)
+            if _needs_browser_fallback(browser_text, None):
+                # Both methods returned thin content; return best effort.
+                note = "[Note: page may require authentication or is JS-heavy]\n\n"
+                body = browser_text or static_text
+                return f"URL: {url}\n\n{note}{body[:max_chars]}"
+            return f"URL: {url}\n\n{browser_text}"
+        except ImportError as exc:
+            # Playwright not installed: fall through to static result with notice.
+            notice = (
+                f"[Browser fallback unavailable: {exc}]\n"
+                f"[Static fetch returned limited content ({len(static_text)} chars)]\n\n"
+            )
+            return f"URL: {url}\n\n{notice}{static_text[:max_chars]}"
+        except Exception as exc:
+            notice = f"[Browser fallback failed: {exc}]\n\n"
+            return f"URL: {url}\n\n{notice}{static_text[:max_chars]}"
 
-    # Collapse repeated blank lines.
-    text = re.sub(r"\n{3,}", "\n\n", text)
-
-    header = f"URL: {url}\n\n"
-    body = text[:max_chars]
-    return header + body
+    return f"URL: {url}\n\n{static_text[:max_chars]}"
 
 
 # ---------------------------------------------------------------------------

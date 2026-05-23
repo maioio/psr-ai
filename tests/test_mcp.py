@@ -310,6 +310,21 @@ class TestPsrQuickSnapshot:
 # 6. psr_fetch_link
 # ---------------------------------------------------------------------------
 
+def _fake_urlopen(html: bytes, status: int = 200):
+    """Return a context-manager mock that urllib.request.urlopen can be patched with."""
+    class _Resp:
+        def read(self, n):
+            return html
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            pass
+        headers = type("H", (), {"get_content_charset": lambda s: "utf-8"})()
+
+    _Resp.status = status
+    return _Resp()
+
+
 class TestPsrFetchLink:
     def test_missing_url_returns_error(self, monkeypatch):
         resp = _call(
@@ -320,18 +335,9 @@ class TestPsrFetchLink:
         assert resp["error"]["code"] == -32602
 
     def test_generic_url_returns_text(self, monkeypatch):
-        fake_html = b"<html><body><p>Hello world</p></body></html>"
+        fake_html = b"<html><body><p>" + b"Hello world " * 20 + b"</p></body></html>"
 
-        class _FakeResp:
-            def read(self, n):
-                return fake_html
-            def __enter__(self):
-                return self
-            def __exit__(self, *a):
-                pass
-            headers = type("H", (), {"get_content_charset": lambda s: "utf-8"})()
-
-        with patch("urllib.request.urlopen", return_value=_FakeResp()):
+        with patch("urllib.request.urlopen", return_value=_fake_urlopen(fake_html)):
             resp = _call(
                 _req("tools/call", {"name": "psr_fetch_link", "arguments": {"url": "http://example.com"}}),
                 monkeypatch,
@@ -343,19 +349,10 @@ class TestPsrFetchLink:
         assert "http://example.com" in text
 
     def test_max_chars_truncates_output(self, monkeypatch):
-        long_body = "X" * 500
-        fake_html = f"<html><body><p>{long_body}</p></body></html>".encode()
+        long_body = ("sufficient content " * 20).encode()
+        fake_html = b"<html><body><p>" + long_body + b"</p></body></html>"
 
-        class _FakeResp:
-            def read(self, n):
-                return fake_html
-            def __enter__(self):
-                return self
-            def __exit__(self, *a):
-                pass
-            headers = type("H", (), {"get_content_charset": lambda s: "utf-8"})()
-
-        with patch("urllib.request.urlopen", return_value=_FakeResp()):
+        with patch("urllib.request.urlopen", return_value=_fake_urlopen(fake_html)):
             resp = _call(
                 _req(
                     "tools/call",
@@ -369,7 +366,8 @@ class TestPsrFetchLink:
 
         assert "error" not in resp
         text = resp["result"]["content"][0]["text"]
-        assert len(text) <= 130  # url header + max_chars body
+        # url header (~30 chars) + max_chars body = well under 200
+        assert len(text) <= 200
 
     def test_ytdlp_missing_returns_message(self, monkeypatch):
         import shutil as _shutil
@@ -396,6 +394,139 @@ class TestPsrFetchLink:
         assert "error" not in resp
         text = resp["result"]["content"][0]["text"]
         assert "Failed to fetch" in text
+
+    # ------------------------------------------------------------------
+    # Browser fallback tests
+    # ------------------------------------------------------------------
+
+    def test_thin_response_triggers_browser_fallback(self, monkeypatch):
+        """A static response with less than _BROWSER_FALLBACK_MIN_CHARS triggers Playwright."""
+        import psr_ai.mcp as mcp_mod
+
+        thin_html = b"<html><body><p>tiny</p></body></html>"
+        browser_text = "Full rich content from the browser. " * 20
+
+        with (
+            patch("urllib.request.urlopen", return_value=_fake_urlopen(thin_html)),
+            patch.object(mcp_mod, "_fetch_with_browser", return_value=browser_text) as mock_browser,
+        ):
+            resp = _call(
+                _req("tools/call", {"name": "psr_fetch_link", "arguments": {"url": "http://spa.example"}}),
+                monkeypatch,
+            )
+
+        mock_browser.assert_called_once()
+        assert "error" not in resp
+        text = resp["result"]["content"][0]["text"]
+        assert "Full rich content" in text
+
+    def test_403_triggers_browser_fallback(self, monkeypatch):
+        """HTTP 403 from urllib triggers the browser fallback automatically."""
+        import psr_ai.mcp as mcp_mod
+        from urllib.error import HTTPError
+
+        browser_text = "Protected page content now visible. " * 10
+
+        with (
+            patch("urllib.request.urlopen", side_effect=HTTPError(
+                "http://gate.example", 403, "Forbidden", {}, None
+            )),
+            patch.object(mcp_mod, "_fetch_with_browser", return_value=browser_text) as mock_browser,
+        ):
+            resp = _call(
+                _req("tools/call", {"name": "psr_fetch_link", "arguments": {"url": "http://gate.example"}}),
+                monkeypatch,
+            )
+
+        mock_browser.assert_called_once()
+        assert "error" not in resp
+        text = resp["result"]["content"][0]["text"]
+        assert "Protected page content" in text
+
+    def test_login_wall_signal_triggers_browser_fallback(self, monkeypatch):
+        """A page body containing 'log in' triggers the fallback even if not too short."""
+        import psr_ai.mcp as mcp_mod
+
+        gate_html = (b"<html><body>" + b"Log in to continue. " * 15 + b"</body></html>")
+        browser_text = "Actual page body after login wall bypassed. " * 10
+
+        with (
+            patch("urllib.request.urlopen", return_value=_fake_urlopen(gate_html)),
+            patch.object(mcp_mod, "_fetch_with_browser", return_value=browser_text) as mock_browser,
+        ):
+            resp = _call(
+                _req("tools/call", {"name": "psr_fetch_link", "arguments": {"url": "http://walled.example"}}),
+                monkeypatch,
+            )
+
+        mock_browser.assert_called_once()
+        assert "error" not in resp
+        text = resp["result"]["content"][0]["text"]
+        assert "Actual page body" in text
+
+    def test_playwright_missing_returns_graceful_notice(self, monkeypatch):
+        """If Playwright is not installed the tool returns a notice, not an error."""
+        import psr_ai.mcp as mcp_mod
+
+        thin_html = b"<html><body><p>tiny</p></body></html>"
+
+        with (
+            patch("urllib.request.urlopen", return_value=_fake_urlopen(thin_html)),
+            patch.object(
+                mcp_mod,
+                "_fetch_with_browser",
+                side_effect=ImportError("No module named 'playwright'"),
+            ),
+        ):
+            resp = _call(
+                _req("tools/call", {"name": "psr_fetch_link", "arguments": {"url": "http://spa.example"}}),
+                monkeypatch,
+            )
+
+        assert "error" not in resp
+        text = resp["result"]["content"][0]["text"]
+        assert "playwright" in text.lower() or "Browser fallback unavailable" in text
+
+    def test_browser_fallback_exception_returns_notice(self, monkeypatch):
+        """A runtime error in the browser fallback returns a notice, not a crash."""
+        import psr_ai.mcp as mcp_mod
+
+        thin_html = b"<html><body><p>tiny</p></body></html>"
+
+        with (
+            patch("urllib.request.urlopen", return_value=_fake_urlopen(thin_html)),
+            patch.object(
+                mcp_mod,
+                "_fetch_with_browser",
+                side_effect=RuntimeError("chromium launch failed"),
+            ),
+        ):
+            resp = _call(
+                _req("tools/call", {"name": "psr_fetch_link", "arguments": {"url": "http://spa.example"}}),
+                monkeypatch,
+            )
+
+        assert "error" not in resp
+        text = resp["result"]["content"][0]["text"]
+        assert "Browser fallback failed" in text
+
+    def test_rich_static_response_skips_browser(self, monkeypatch):
+        """A rich static response must NOT trigger the browser fallback."""
+        import psr_ai.mcp as mcp_mod
+
+        rich_html = b"<html><body><p>" + b"Rich content. " * 30 + b"</p></body></html>"
+
+        with (
+            patch("urllib.request.urlopen", return_value=_fake_urlopen(rich_html)),
+            patch.object(mcp_mod, "_fetch_with_browser") as mock_browser,
+        ):
+            resp = _call(
+                _req("tools/call", {"name": "psr_fetch_link", "arguments": {"url": "http://rich.example"}}),
+                monkeypatch,
+            )
+
+        mock_browser.assert_not_called()
+        assert "error" not in resp
 
 
 # ---------------------------------------------------------------------------
