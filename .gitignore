@@ -48,6 +48,10 @@ coverage.xml
 # Bundled assets - track only the PSR shortcut, ignore everything else binary
 !assets/psr_fallback/psr_shortcut.lnk
 
+# Playwright MCP browser session artifacts (may contain PII)
+.playwright-mcp/
+*.playwright-session/
+
 # OS noise
 .DS_Store
 Thumbs.db

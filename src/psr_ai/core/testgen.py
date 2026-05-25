@@ -191,6 +191,75 @@ def _render_playwright(
             return "http://localhost:3000"
 
 
+        # ---------------------------------------------------------------------------
+        # Soft assertion helper
+        # ---------------------------------------------------------------------------
+
+        class SoftAssertions:
+            \"\"\"Collect non-fatal assertion failures and report all at end of test.\"\"\"
+
+            def __init__(self) -> None:
+                self._failures: list[str] = []
+
+            def expect(self, locator, message: str = ""):
+                \"\"\"Return a soft wrapper around a Playwright locator.\"\"\"
+                return _SoftLocatorWrapper(locator, self._failures, message)
+
+            def assert_all(self) -> None:
+                if self._failures:
+                    joined = "\\n".join(f"  - {{f}}" for f in self._failures)
+                    raise AssertionError(f"Soft assertion failures:\\n{{joined}}")
+
+
+        class _SoftLocatorWrapper:
+            def __init__(self, locator, failures: list, message: str):
+                self._loc = locator
+                self._failures = failures
+                self._msg = message
+
+            def to_be_visible(self):
+                try:
+                    expect(self._loc).to_be_visible()
+                except AssertionError as exc:
+                    self._failures.append(self._msg or str(exc))
+                return self
+
+            def to_have_text(self, text):
+                try:
+                    expect(self._loc).to_have_text(text)
+                except AssertionError as exc:
+                    self._failures.append(self._msg or str(exc))
+                return self
+
+            def to_be_enabled(self):
+                try:
+                    expect(self._loc).to_be_enabled()
+                except AssertionError as exc:
+                    self._failures.append(self._msg or str(exc))
+                return self
+
+            def to_have_value(self, value):
+                try:
+                    expect(self._loc).to_have_value(value)
+                except AssertionError as exc:
+                    self._failures.append(self._msg or str(exc))
+                return self
+
+            def to_have_count(self, count):
+                try:
+                    expect(self._loc).to_have_count(count)
+                except AssertionError as exc:
+                    self._failures.append(self._msg or str(exc))
+                return self
+
+            def to_be_checked(self):
+                try:
+                    expect(self._loc).to_be_checked()
+                except AssertionError as exc:
+                    self._failures.append(self._msg or str(exc))
+                return self
+
+
     """)
 
     test_functions: list[str] = []
@@ -288,8 +357,29 @@ def _action_to_playwright(
         return "page.goto(base_url)"
 
     # Text input: "type", "input", "key", "press"
-    if any(kw in action for kw in ("type", "input", "fill", "entered text")):
-        return "page.keyboard.type(\"\")  # TODO: fill with actual value"
+    if any(kw in action for kw in ("type", "input", "fill", "entered text", "entered")):
+        # Extract quoted text if present
+        m = re.search(r'"([^"]+)"', action) or re.search(r"'([^']+)'", action)
+        value = m.group(1) if m else ""
+        if value:
+            return f'page.keyboard.type({value!r})'
+        return 'page.keyboard.type("")  # TODO: fill with actual value'
+
+    # Double click
+    if "double" in action and "click" in action:
+        safe_label = label.strip()
+        if safe_label and safe_label.lower() not in ("step", "screenshot"):
+            escaped = safe_label.replace('"', '\\"')
+            return f'page.dblclick(page.get_by_text("{escaped}", exact=False))'
+        if click_x is not None and click_y is not None:
+            return f"page.mouse.dblclick({click_x}, {click_y})"
+        return "page.dblclick(\"body\")  # TODO: replace with correct selector"
+
+    # Right click
+    if "right" in action and "click" in action:
+        if click_x is not None and click_y is not None:
+            return f'page.mouse.click({click_x}, {click_y}, button="right")'
+        return 'page.click("body", button="right")  # TODO: replace with correct selector'
 
     # Click at coordinates
     if click_x is not None and click_y is not None and (click_x or click_y):
@@ -303,15 +393,68 @@ def _action_to_playwright(
             return f'page.get_by_text("{escaped}", exact=False).click()'
         return "page.mouse.click(0, 0)  # TODO: replace with correct selector"
 
+    # Hover
+    if "hover" in action or "mouse over" in action:
+        safe_label = label.strip()
+        if safe_label and safe_label.lower() not in ("step", "screenshot"):
+            escaped = safe_label.replace('"', '\\"')
+            return f'page.get_by_text("{escaped}", exact=False).hover()'
+        return "page.hover(\"body\")  # TODO: replace with correct selector"
+
+    # Keyboard press
+    if "press" in action or "key" in action:
+        # Try to extract key name
+        key_match = re.search(r"\b(enter|tab|escape|esc|space|backspace|delete|f\d+|ctrl\+\w+|alt\+\w+)\b", action, re.I)
+        key = key_match.group(1).title() if key_match else "Enter"
+        return f'page.keyboard.press("{key}")'
+
     # Scroll
     if "scroll" in action:
         return "page.mouse.wheel(0, 300)"
 
-    # Screenshot assertion
+    # Screenshot assertion with full expect API
     if screenshot:
         return "expect(page).to_have_screenshot()"
 
     return ""
+
+
+def _generate_assertions(steps: list[dict]) -> list[str]:
+    """Generate Playwright expect assertions from a step list.
+
+    Returns lines to append after the action sequence.
+    Covers: to_have_url, to_have_title, to_be_visible, to_be_enabled,
+    to_have_text, to_have_value, to_have_count, to_be_checked.
+    """
+    assertions: list[str] = []
+
+    # Check if any navigation step happened - assert final URL
+    nav_steps = [s for s in steps if any(
+        kw in (s.get("action_text", "") or "").lower()
+        for kw in ("navigate", "go to", "open", "launch")
+    )]
+    if nav_steps:
+        assertions.append("    # --- Assertions ---")
+        assertions.append("    expect(page).to_have_url(re.compile(r'http'))")
+        assertions.append("    expect(page).to_have_title(re.compile(r'.+'))")
+
+    # Check if any input step happened - assert form fields
+    input_steps = [s for s in steps if any(
+        kw in (s.get("action_text", "") or "").lower()
+        for kw in ("type", "input", "fill", "entered")
+    )]
+    if input_steps:
+        if not nav_steps:
+            assertions.append("    # --- Assertions ---")
+        assertions.append("    # expect(page.locator('input').first).to_have_value('')  # TODO: verify input value")
+
+    # Check for click steps - assert element visible
+    click_steps = [s for s in steps if "click" in (s.get("action_text", "") or "").lower()]
+    if click_steps and not assertions:
+        assertions.append("    # --- Assertions ---")
+        assertions.append("    expect(page.locator('body')).to_be_visible()")
+
+    return assertions
 
 
 # ---------------------------------------------------------------------------

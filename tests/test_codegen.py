@@ -162,6 +162,152 @@ class TestRecordActionsProgrammatic:
 
 
 # ---------------------------------------------------------------------------
+# _dispatch_action (all action types)
+# ---------------------------------------------------------------------------
+
+class TestDispatchAction:
+    def _setup(self):
+        page = MagicMock()
+        page.keyboard = MagicMock()
+        page.mouse = MagicMock()
+        page.locator = MagicMock()
+        code_lines: list = []
+        recorded: list = []
+        return page, code_lines, recorded
+
+    def test_click(self):
+        from psr_ai.core.codegen import _dispatch_action
+        page, code_lines, recorded = self._setup()
+        _dispatch_action(page, {"type": "click", "selector": "#btn"}, code_lines, recorded, 0)
+        page.click.assert_called_once_with("#btn")
+        assert any("page.click" in l for l in code_lines)
+
+    def test_dblclick(self):
+        from psr_ai.core.codegen import _dispatch_action
+        page, code_lines, recorded = self._setup()
+        _dispatch_action(page, {"type": "dblclick", "selector": "#item"}, code_lines, recorded, 0)
+        page.dblclick.assert_called_once_with("#item")
+        assert any("dblclick" in l for l in code_lines)
+
+    def test_right_click(self):
+        from psr_ai.core.codegen import _dispatch_action
+        page, code_lines, recorded = self._setup()
+        _dispatch_action(page, {"type": "right_click", "selector": "#menu"}, code_lines, recorded, 0)
+        page.click.assert_called_once_with("#menu", button="right")
+        assert any("right" in l for l in code_lines)
+
+    def test_hover(self):
+        from psr_ai.core.codegen import _dispatch_action
+        page, code_lines, recorded = self._setup()
+        _dispatch_action(page, {"type": "hover", "selector": "#tooltip"}, code_lines, recorded, 0)
+        page.hover.assert_called_once_with("#tooltip")
+
+    def test_fill(self):
+        from psr_ai.core.codegen import _dispatch_action
+        page, code_lines, recorded = self._setup()
+        _dispatch_action(page, {"type": "fill", "selector": "input", "value": "hello"}, code_lines, recorded, 0)
+        page.fill.assert_called_once_with("input", "hello")
+
+    def test_type_with_selector(self):
+        from psr_ai.core.codegen import _dispatch_action
+        page, code_lines, recorded = self._setup()
+        _dispatch_action(page, {"type": "type", "selector": "textarea", "value": "abc"}, code_lines, recorded, 0)
+        page.click.assert_called_once_with("textarea")
+        page.keyboard.type.assert_called_once_with("abc")
+
+    def test_press_with_selector(self):
+        from psr_ai.core.codegen import _dispatch_action
+        page, code_lines, recorded = self._setup()
+        _dispatch_action(page, {"type": "press", "selector": "input", "key": "Enter"}, code_lines, recorded, 0)
+        page.press.assert_called_once_with("input", "Enter")
+
+    def test_press_without_selector(self):
+        from psr_ai.core.codegen import _dispatch_action
+        page, code_lines, recorded = self._setup()
+        _dispatch_action(page, {"type": "press", "key": "Tab"}, code_lines, recorded, 0)
+        page.keyboard.press.assert_called_once_with("Tab")
+
+    def test_select_option_by_value(self):
+        from psr_ai.core.codegen import _dispatch_action
+        page, code_lines, recorded = self._setup()
+        _dispatch_action(page, {"type": "select_option", "selector": "select", "value": "opt1"}, code_lines, recorded, 0)
+        page.select_option.assert_called_once_with("select", value="opt1")
+
+    def test_select_option_by_label(self):
+        from psr_ai.core.codegen import _dispatch_action
+        page, code_lines, recorded = self._setup()
+        _dispatch_action(page, {"type": "select_option", "selector": "select", "label": "Option 1"}, code_lines, recorded, 0)
+        page.select_option.assert_called_once_with("select", label="Option 1")
+
+    def test_check(self):
+        from psr_ai.core.codegen import _dispatch_action
+        page, code_lines, recorded = self._setup()
+        _dispatch_action(page, {"type": "check", "selector": "#cb"}, code_lines, recorded, 0)
+        page.check.assert_called_once_with("#cb")
+
+    def test_uncheck(self):
+        from psr_ai.core.codegen import _dispatch_action
+        page, code_lines, recorded = self._setup()
+        _dispatch_action(page, {"type": "uncheck", "selector": "#cb"}, code_lines, recorded, 0)
+        page.uncheck.assert_called_once_with("#cb")
+
+    def test_drag_and_drop(self):
+        from psr_ai.core.codegen import _dispatch_action
+        page, code_lines, recorded = self._setup()
+        _dispatch_action(page, {"type": "drag_and_drop", "source": "#src", "target": "#dst"}, code_lines, recorded, 0)
+        page.drag_and_drop.assert_called_once_with("#src", "#dst")
+
+    def test_scroll_wheel(self):
+        from psr_ai.core.codegen import _dispatch_action
+        page, code_lines, recorded = self._setup()
+        _dispatch_action(page, {"type": "scroll", "delta_x": 0, "delta_y": 500}, code_lines, recorded, 0)
+        page.mouse.wheel.assert_called_once_with(0, 500)
+
+    def test_tap(self):
+        from psr_ai.core.codegen import _dispatch_action
+        page, code_lines, recorded = self._setup()
+        _dispatch_action(page, {"type": "tap", "selector": "#btn"}, code_lines, recorded, 0)
+        page.tap.assert_called_once_with("#btn")
+
+    def test_focus(self):
+        from psr_ai.core.codegen import _dispatch_action
+        page, code_lines, recorded = self._setup()
+        _dispatch_action(page, {"type": "focus", "selector": "input"}, code_lines, recorded, 0)
+        page.focus.assert_called_once_with("input")
+
+    def test_go_back(self):
+        from psr_ai.core.codegen import _dispatch_action
+        page, code_lines, recorded = self._setup()
+        _dispatch_action(page, {"type": "go_back"}, code_lines, recorded, 0)
+        page.go_back.assert_called_once()
+
+    def test_go_forward(self):
+        from psr_ai.core.codegen import _dispatch_action
+        page, code_lines, recorded = self._setup()
+        _dispatch_action(page, {"type": "go_forward"}, code_lines, recorded, 0)
+        page.go_forward.assert_called_once()
+
+    def test_reload(self):
+        from psr_ai.core.codegen import _dispatch_action
+        page, code_lines, recorded = self._setup()
+        _dispatch_action(page, {"type": "reload"}, code_lines, recorded, 0)
+        page.reload.assert_called_once()
+
+    def test_set_input_files(self):
+        from psr_ai.core.codegen import _dispatch_action
+        page, code_lines, recorded = self._setup()
+        _dispatch_action(page, {"type": "set_input_files", "selector": "input[type=file]", "files": ["/tmp/f.txt"]}, code_lines, recorded, 0)
+        page.set_input_files.assert_called_once_with("input[type=file]", ["/tmp/f.txt"])
+
+    def test_evaluate(self):
+        from psr_ai.core.codegen import _dispatch_action
+        page, code_lines, recorded = self._setup()
+        page.evaluate.return_value = 42
+        _dispatch_action(page, {"type": "evaluate", "script": "1+1"}, code_lines, recorded, 0)
+        page.evaluate.assert_called_once_with("1+1")
+
+
+# ---------------------------------------------------------------------------
 # CLI smoke tests
 # ---------------------------------------------------------------------------
 

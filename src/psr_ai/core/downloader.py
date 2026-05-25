@@ -1,4 +1,4 @@
-"""Media downloader: yt-dlp for video/audio, gallery-dl for image galleries."""
+"""Media downloader: yt-dlp for video/audio, gallery-dl for image galleries, instagrapi for Instagram."""
 
 from __future__ import annotations
 
@@ -66,15 +66,34 @@ class ProfileDownloadResult:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _ytdlp_available() -> bool:
+def _ytdlp_cmd() -> list[str] | None:
+    """Return the yt-dlp invocation list, or None if not available.
+
+    Prefers the standalone 'yt-dlp' executable; falls back to
+    'python -m yt_dlp' if the module is installed in the current env.
+    """
+    # Try standalone executable first (common when installed via pipx/brew/winget)
     try:
-        subprocess.run(
+        r = subprocess.run(["yt-dlp", "--version"], capture_output=True, timeout=10)
+        if r.returncode == 0:
+            return ["yt-dlp"]
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    # Fall back to Python module
+    try:
+        r = subprocess.run(
             [sys.executable, "-m", "yt_dlp", "--version"],
             capture_output=True, timeout=10,
         )
-        return True
+        if r.returncode == 0:
+            return [sys.executable, "-m", "yt_dlp"]
     except (FileNotFoundError, subprocess.TimeoutExpired):
-        return False
+        pass
+    return None
+
+
+def _ytdlp_available() -> bool:
+    return _ytdlp_cmd() is not None
 
 
 def _gallery_dl_available() -> bool:
@@ -247,4 +266,166 @@ def _gallery_dl_download(
         output_dir=output_dir,
         files=new_files,
         tool_used="gallery-dl",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Instagram download (instagrapi)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class InstagramResult:
+    url: str
+    output_dir: Path
+    media_type: str = ""
+    files: list[Path] = field(default_factory=list)
+    error: str | None = None
+
+    @property
+    def success(self) -> bool:
+        return self.error is None and len(self.files) > 0
+
+    def report(self) -> str:
+        if self.error:
+            return f"Instagram download failed: {self.error}"
+        lines = [f"Instagram download: {self.url}"]
+        lines.append(f"  Type: {self.media_type}")
+        lines.append(f"  Files: {len(self.files)}")
+        for f in self.files[:5]:
+            lines.append(f"    {f.name}")
+        if len(self.files) > 5:
+            lines.append(f"    ... and {len(self.files) - 5} more")
+        lines.append(f"  Output: {self.output_dir}")
+        return "\n".join(lines)
+
+
+def _instagrapi_available() -> bool:
+    try:
+        import importlib
+        importlib.import_module("instagrapi")
+        return True
+    except ImportError:
+        return False
+
+
+def download_instagram(
+    url: str,
+    output_dir: Path,
+    session_file: Path | None = None,
+    username: str | None = None,
+    password: str | None = None,
+    echo_fn: Callable[[str], None] | None = None,
+) -> InstagramResult:
+    """Download Instagram media (Reels, posts, stories) using instagrapi.
+
+    Uses Instagram's private mobile API - fully headless, no browser popup.
+    After first login the session is saved and reused on subsequent calls.
+
+    Args:
+        url: Instagram post/reel/story URL.
+        output_dir: Directory to save downloaded files.
+        session_file: Path to load/save session JSON. Defaults to
+            ~/.psr_instagram_session.json.
+        username: Instagram username (required for first-time login).
+        password: Instagram password (required for first-time login).
+        echo_fn: Optional callback for progress messages.
+
+    Requires: pip install psr-ai[instagram]
+    """
+    def _echo(msg: str) -> None:
+        if echo_fn:
+            echo_fn(msg)
+
+    if not _instagrapi_available():
+        raise ImportError(
+            "instagrapi is required for Instagram downloads.\n"
+            "Run: pip install psr-ai[instagram]"
+        )
+
+    from instagrapi import Client
+    from instagrapi.exceptions import LoginRequired, ClientError
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    default_session = Path.home() / ".psr_instagram_session.json"
+    sess = session_file or default_session
+
+    cl = Client()
+    cl.delay_range = [1, 3]
+
+    # Load existing session if available
+    logged_in = False
+    if sess.exists():
+        try:
+            cl.load_settings(sess)
+            cl.get_timeline_feed()
+            logged_in = True
+            _echo("  Loaded existing Instagram session.")
+        except Exception:
+            _echo("  Session expired, re-logging in...")
+            logged_in = False
+
+    if not logged_in:
+        if not username or not password:
+            return InstagramResult(
+                url=url,
+                output_dir=output_dir,
+                error=(
+                    "Instagram login required. Provide --username and --password "
+                    "for first-time setup. Session will be saved for future headless use."
+                ),
+            )
+        try:
+            _echo(f"  Logging in as {username}...")
+            cl.login(username, password)
+            cl.dump_settings(sess)
+            _echo(f"  Session saved to {sess}")
+        except Exception as exc:
+            return InstagramResult(url=url, output_dir=output_dir, error=str(exc))
+
+    # Determine media type from URL and download
+    before_files = set(_files_in(output_dir))
+    media_type = "unknown"
+    try:
+        media_pk = cl.media_pk_from_url(url)
+        media_info = cl.media_info(media_pk)
+        mt = media_info.media_type
+
+        if mt == 2 and media_info.product_type == "clips":
+            media_type = "reel"
+            _echo(f"  Downloading Reel: {media_info.title or url}")
+            cl.clip_download(media_pk, folder=output_dir)
+        elif mt == 1:
+            media_type = "photo"
+            _echo("  Downloading photo...")
+            cl.photo_download(media_pk, folder=output_dir)
+        elif mt == 2:
+            media_type = "video"
+            _echo("  Downloading video...")
+            cl.video_download(media_pk, folder=output_dir)
+        elif mt == 8:
+            media_type = "album"
+            _echo("  Downloading album...")
+            cl.album_download(media_pk, folder=output_dir)
+        else:
+            media_type = f"type_{mt}"
+            _echo(f"  Downloading media (type {mt})...")
+            cl.photo_download(media_pk, folder=output_dir)
+
+    except LoginRequired:
+        return InstagramResult(
+            url=url,
+            output_dir=output_dir,
+            error="Instagram session expired. Delete the session file and re-login.",
+        )
+    except ClientError as exc:
+        return InstagramResult(url=url, output_dir=output_dir, error=str(exc))
+    except Exception as exc:
+        return InstagramResult(url=url, output_dir=output_dir, error=str(exc))
+
+    new_files = sorted(set(_files_in(output_dir)) - before_files)
+    return InstagramResult(
+        url=url,
+        output_dir=output_dir,
+        media_type=media_type,
+        files=new_files,
     )

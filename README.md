@@ -2,7 +2,7 @@
 
 > Record any workflow once. Let AI agents understand it forever.
 
-![PSR.ai Demo](docs/assets/PSR_ai_v1_0_0_Demo.gif)
+<!-- Demo GIF coming soon — see docs/assets/ -->
 
 PSR.ai turns raw screen recordings into structured, machine-readable documentation in one command - preventing AI token bleeding, cutting API costs by up to 80%, and enabling autonomous self-healing pipelines across Windows, macOS, and Linux.
 
@@ -140,6 +140,8 @@ Session: My Workflow | Source: recording.zip | Steps: 12
 STEP 000 | 2024-01-15 14:30:00 | Chrome | Left-click on Submit | screenshot:yes
 STEP 001 | 2024-01-15 14:30:05 | Chrome | Type: search query   | screenshot:yes
 ```
+
+> **Note:** `timestamp`, `program`, and `action_text` fields are populated automatically by `sa analyze <dir>` (requires an Anthropic or OpenAI API key). Without `sa analyze`, sessions are still fully usable — LLMs can work directly from the screenshots.
 
 ### Feeding data.json to an agent
 

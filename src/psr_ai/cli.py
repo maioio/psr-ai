@@ -655,8 +655,11 @@ def capture(
             raise SystemExit(1)
 
 
-# Hebrew alias: sa צלם
-main.add_command(capture, name="צלם")
+# Hebrew alias: sa צלם — wrapped to avoid UnicodeEncodeError on cp1252 terminals
+try:
+    main.add_command(capture, name="צלם")
+except Exception:
+    pass
 
 
 # ------------------------------------------------------------------
@@ -1734,3 +1737,795 @@ def download_profile(url: str, output: str | None, limit: int | None) -> None:
     except Exception as exc:
         click.echo(f"Error: {exc}", err=True)
         raise SystemExit(1)
+
+
+# ------------------------------------------------------------------
+# sa instagram
+# ------------------------------------------------------------------
+
+@main.command()
+@click.argument("url")
+@click.option(
+    "--output", "-o",
+    default=None,
+    type=click.Path(),
+    help="Output directory. Defaults to psr_output/instagram/.",
+)
+@click.option(
+    "--session", "-s",
+    default=None,
+    type=click.Path(),
+    help="Path to session JSON file. Defaults to ~/.psr_instagram_session.json.",
+)
+@click.option(
+    "--username", "-u",
+    default=None,
+    envvar="IG_USERNAME",
+    help="Instagram username for first-time login (or set IG_USERNAME env var).",
+)
+@click.option(
+    "--password", "-p",
+    default=None,
+    envvar="IG_PASSWORD",
+    help="Instagram password for first-time login (or set IG_PASSWORD env var).",
+)
+def instagram(
+    url: str,
+    output: str | None,
+    session: str | None,
+    username: str | None,
+    password: str | None,
+) -> None:
+    """Download Instagram Reels, posts, or albums - fully headless.
+
+    Uses Instagram's private mobile API (instagrapi) - no browser window opens.
+    First run requires --username and --password to authenticate; subsequent
+    runs reuse the saved session file automatically.
+
+    Requires: pip install psr-ai[instagram]
+
+    Examples:
+      sa instagram https://www.instagram.com/reel/ABC123/
+      sa instagram https://www.instagram.com/p/XYZ789/ --username me --password secret
+      sa instagram https://www.instagram.com/reel/ABC123/ --session ./my_session.json
+      sa instagram https://www.instagram.com/reel/ABC123/ --output ./downloads/ig/
+    """
+    from psr_ai.core.downloader import download_instagram
+
+    out_dir = Path(output) if output else default_output_dir() / "instagram"
+    sess_path = Path(session) if session else None
+
+    try:
+        result = download_instagram(
+            url,
+            out_dir,
+            session_file=sess_path,
+            username=username,
+            password=password,
+            echo_fn=_echo,
+        )
+        _echo(result.report())
+        raise SystemExit(0 if result.success else 1)
+    except ImportError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+
+
+# ------------------------------------------------------------------
+# sa video-analyze
+# ------------------------------------------------------------------
+
+@main.command("video-analyze")
+@click.argument("source")
+@click.option(
+    "--question", "-q",
+    default=None,
+    help="What to ask Claude about the video. Default: full summary with TL;DR, key points, quotes.",
+)
+@click.option(
+    "--output", "-o",
+    default=None,
+    type=click.Path(),
+    help="Output directory. Defaults to psr_output/video_analysis/.",
+)
+@click.option(
+    "--fps",
+    default=0.5,
+    type=float,
+    show_default=True,
+    help="Frames per second to sample (0.5 = 1 frame every 2 seconds).",
+)
+@click.option(
+    "--max-frames",
+    default=300,
+    type=int,
+    show_default=True,
+    help="Maximum number of frames to extract.",
+)
+@click.option(
+    "--whisper-model",
+    default="base",
+    show_default=True,
+    type=click.Choice(["tiny", "base", "small", "medium", "large"]),
+    help="Whisper model size for transcription.",
+)
+def video_analyze(
+    source: str,
+    question: str | None,
+    output: str | None,
+    fps: float,
+    max_frames: int,
+    whisper_model: str,
+) -> None:
+    """Analyze a video using frames + audio transcription + Claude.
+
+    SOURCE can be a URL (YouTube, TikTok, Instagram Reel, Twitter/X, etc.)
+    or a local video file path.
+
+    Claude receives sampled frames and the full audio transcript, then
+    answers your question or produces a structured summary.
+
+    Requires: pip install psr-ai[analyze]
+
+    Examples:
+      sa video-analyze https://www.youtube.com/watch?v=abc123
+      sa video-analyze https://www.tiktok.com/@user/video/123 -q "what is this about?"
+      sa video-analyze lecture.mp4 -q "summarize the key points"
+      sa video-analyze video.mp4 --whisper-model small --fps 1
+    """
+    from psr_ai.core.video_analyzer import analyze_video
+
+    out_dir = Path(output) if output else default_output_dir() / "video_analysis"
+    default_question = (
+        "Please analyze this video. Provide:\n"
+        "1. TL;DR (2-3 sentences)\n"
+        "2. Key points (bullet list)\n"
+        "3. Notable quotes or moments\n"
+        "4. Main takeaways"
+    )
+
+    try:
+        result = analyze_video(
+            source,
+            out_dir,
+            question=question or default_question,
+            fps=fps,
+            max_frames=max_frames,
+            whisper_model=whisper_model,
+            echo_fn=_echo,
+        )
+        _echo(result.report())
+        raise SystemExit(0 if result.success else 1)
+    except ImportError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+
+
+# ------------------------------------------------------------------
+# sa api
+# ------------------------------------------------------------------
+
+@main.command()
+@click.argument("url")
+@click.option(
+    "--method", "-X",
+    default="GET",
+    show_default=True,
+    type=click.Choice(["GET", "POST", "PUT", "DELETE", "PATCH"], case_sensitive=False),
+    help="HTTP method.",
+)
+@click.option(
+    "--data", "-d",
+    default=None,
+    help="JSON request body (for POST/PUT/PATCH). Pass as a JSON string.",
+)
+@click.option(
+    "--header", "-H",
+    "headers",
+    multiple=True,
+    help="Request header in 'Name: Value' format. Repeatable.",
+)
+@click.option(
+    "--output", "-o",
+    default=None,
+    type=click.Path(),
+    help="Output directory for the response JSON.",
+)
+@click.option(
+    "--assert-status",
+    default=None,
+    type=int,
+    help="Assert that the response status matches this code. Exits 1 if not.",
+)
+@click.option(
+    "--storage-state",
+    default=None,
+    type=click.Path(exists=True),
+    help="Path to browser storage_state.json to reuse auth cookies.",
+)
+def api(
+    url: str,
+    method: str,
+    data: str | None,
+    headers: tuple,
+    output: str | None,
+    assert_status: int | None,
+    storage_state: str | None,
+) -> None:
+    """Send an HTTP request using Playwright's API testing layer (no browser).
+
+    Supports reusing a saved browser authentication session via --storage-state,
+    making it ideal for testing APIs that require browser-based login first.
+
+    Requires: pip install psr-ai[capture]
+
+    Examples:
+      sa api https://api.example.com/users
+      sa api https://api.example.com/items --method POST --data '{"name":"test"}'
+      sa api https://api.example.com/me --storage-state auth.json
+      sa api https://httpbin.org/status/200 --assert-status 200
+    """
+    import json as _json
+    from psr_ai.core.scraper import api_request
+
+    parsed_headers: dict = {}
+    for h in headers:
+        if ":" in h:
+            k, v = h.split(":", 1)
+            parsed_headers[k.strip()] = v.strip()
+
+    parsed_data: dict | None = None
+    if data:
+        try:
+            parsed_data = _json.loads(data)
+        except _json.JSONDecodeError:
+            click.echo(f"Error: --data must be valid JSON. Got: {data!r}", err=True)
+            raise SystemExit(1)
+
+    out_dir = Path(output) if output else None
+    try:
+        result = api_request(
+            url,
+            method=method.upper(),
+            data=parsed_data,
+            headers=parsed_headers or None,
+            output_dir=out_dir,
+            storage_state=storage_state,
+            assert_status=assert_status,
+            echo_fn=_echo,
+        )
+        _echo(result.report())
+        raise SystemExit(0 if result.ok else 1)
+    except AssertionError as exc:
+        click.echo(f"Assertion failed: {exc}", err=True)
+        raise SystemExit(1)
+    except ImportError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+
+
+# ------------------------------------------------------------------
+# sa video
+# ------------------------------------------------------------------
+
+@main.command()
+@click.argument("url")
+@click.option(
+    "--output", "-o",
+    default=None,
+    type=click.Path(),
+    help="Output directory for the video (.webm) and screenshot.",
+)
+@click.option(
+    "--browser", "-b",
+    default="chromium",
+    show_default=True,
+    type=click.Choice(["chromium", "firefox", "webkit"]),
+    help="Browser engine to use.",
+)
+@click.option(
+    "--headed",
+    "headed",
+    is_flag=True,
+    default=False,
+    help="Show the browser window while recording.",
+)
+def video(url: str, output: str | None, browser: str, headed: bool) -> None:
+    """Record a video (.webm) of loading a URL.
+
+    Requires: pip install psr-ai[capture]
+
+    Examples:
+      sa video https://example.com
+      sa video https://example.com --browser firefox --headed
+    """
+    from psr_ai.core.scraper import record_video
+
+    out_dir = Path(output) if output else default_output_dir() / "video"
+    try:
+        result = record_video(
+            url, out_dir,
+            browser_name=browser,
+            headless=not headed,
+            echo_fn=_echo,
+        )
+        _echo(result.report())
+    except ImportError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+
+
+# ------------------------------------------------------------------
+# sa do  (natural language interface)
+# ------------------------------------------------------------------
+
+@main.command("do")
+@click.argument("instruction")
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Show what command would be run without executing it.",
+)
+@click.option(
+    "--lang",
+    default=None,
+    help="Override language detection (e.g. en, he, ar, ru, es, fr, de).",
+)
+def do_command(instruction: str, dry_run: bool, lang: str | None) -> None:
+    """Run any PSR.ai capability using plain language (any language).
+
+    PSR.ai will figure out what you want and execute the right command.
+    Works with English, Hebrew, Arabic, Russian, Spanish, French, German,
+    Italian, Portuguese, Turkish, Chinese, Japanese, Korean, and more.
+
+    Examples:
+      sa do "take a screenshot of google.com"
+      sa do "תוריד לי את הסרטון הזה https://youtube.com/..."
+      sa do "check accessibility of https://example.com"
+      sa do "تحميل هذا الفيديو https://..."
+      sa do "descargar el video de https://..."
+      sa do "截图 https://example.com"
+      sa do "Prueba de accesibilidad en https://example.com"
+    """
+    from psr_ai.core.intent import classify, intent_to_cli_args
+
+    intent = classify(instruction)
+
+    if lang:
+        intent.language = lang
+
+    _echo(f"Detected: action={intent.action!r}  confidence={intent.confidence:.0%}  lang={intent.language}")
+
+    if intent.clarification:
+        click.echo(f"\n{intent.clarification}")
+        raise SystemExit(0)
+
+    cli_args = intent_to_cli_args(intent)
+
+    if dry_run:
+        click.echo(f"Would run: sa {' '.join(cli_args)}")
+        raise SystemExit(0)
+
+    _echo(f"Running: sa {' '.join(cli_args)}")
+    _echo("")
+
+    # Invoke the resolved subcommand via Click's standalone mode
+    try:
+        from click.testing import CliRunner
+        runner = CliRunner(mix_stderr=False)
+        result = runner.invoke(main, cli_args, catch_exceptions=False)
+        if result.output:
+            click.echo(result.output, nl=False)
+        raise SystemExit(result.exit_code)
+    except SystemExit:
+        raise
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+
+
+# ---------------------------------------------------------------------------
+# sa locate  -- Locator API
+# ---------------------------------------------------------------------------
+
+@main.command()
+@click.argument("url")
+@click.option("--css",         default=None, help="CSS selector")
+@click.option("--xpath",       default=None, help="XPath expression")
+@click.option("--role",        default=None, help="ARIA role (e.g. button, link, heading)")
+@click.option("--name",        default=None, help="Accessible name (used with --role)")
+@click.option("--text",        default=None, help="Visible text content")
+@click.option("--label",       default=None, help="Form label text")
+@click.option("--placeholder", default=None, help="Input placeholder text")
+@click.option("--alt",         default=None, help="Image alt text")
+@click.option("--title",       default=None, help="Element title attribute")
+@click.option("--test-id",     default=None, help="data-testid attribute")
+@click.option("--nth",         default=None, type=int, help="0-based index of matched element")
+@click.option("--no-screenshot", "skip_shot", is_flag=True, default=False)
+@click.option("--output", "-o", default=None, type=click.Path())
+@click.option("--browser", default="chromium", show_default=True)
+def locate(url, css, xpath, role, name, text, label, placeholder, alt, title,
+           test_id, nth, skip_shot, output, browser):
+    """Locate elements using Playwright's modern Locator API (get_by_role, get_by_text, etc.).
+
+    Examples:
+      sa locate https://example.com --role heading
+      sa locate https://example.com --text "More information"
+      sa locate https://example.com --css "h1"
+      sa locate https://example.com --role link --name "More information"
+    """
+    from psr_ai.core.scraper import locate_elements
+    out_dir = Path(output) if output else default_output_dir() / "locate"
+    try:
+        result = locate_elements(
+            url=url, output_dir=out_dir,
+            strategy="xpath" if xpath else "css",
+            value=xpath or css or "body",
+            role=role, name=name, text=text, label=label,
+            placeholder=placeholder, alt_text=alt, title=title,
+            test_id=test_id, nth=nth,
+            screenshot=not skip_shot, browser_name=browser,
+        )
+        _echo(result.report())
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+
+
+# ---------------------------------------------------------------------------
+# sa assert  -- Expect assertions
+# ---------------------------------------------------------------------------
+
+@main.command("assert")
+@click.argument("url")
+@click.option("--visible",      multiple=True, metavar="SELECTOR", help="Assert element is visible")
+@click.option("--hidden",       multiple=True, metavar="SELECTOR", help="Assert element is hidden")
+@click.option("--enabled",      multiple=True, metavar="SELECTOR", help="Assert element is enabled")
+@click.option("--disabled",     multiple=True, metavar="SELECTOR", help="Assert element is disabled")
+@click.option("--text",         multiple=True, nargs=2, metavar="SELECTOR VALUE", help="Assert element text")
+@click.option("--count",        multiple=True, nargs=2, metavar="SELECTOR N", help="Assert element count")
+@click.option("--url-pattern",  default=None, help="Assert page URL matches pattern")
+@click.option("--title-pattern",default=None, help="Assert page title matches pattern")
+@click.option("--output", "-o", default=None, type=click.Path())
+@click.option("--browser",      default="chromium", show_default=True)
+def assert_cmd(url, visible, hidden, enabled, disabled, text, count,
+               url_pattern, title_pattern, output, browser):
+    """Run Playwright expect() assertions against a live URL.
+
+    Examples:
+      sa assert https://example.com --visible h1 --title-pattern "Example"
+      sa assert https://example.com --text h1 "Example Domain" --count "p" 2
+    """
+    from psr_ai.core.scraper import run_assertions
+    out_dir = Path(output) if output else default_output_dir() / "assertions"
+
+    assertions: list[dict] = []
+    if url_pattern:
+        assertions.append({"type": "page_url", "pattern": url_pattern})
+    if title_pattern:
+        assertions.append({"type": "page_title", "pattern": title_pattern})
+    for sel in visible:
+        assertions.append({"type": "visible", "selector": sel})
+    for sel in hidden:
+        assertions.append({"type": "hidden", "selector": sel})
+    for sel in enabled:
+        assertions.append({"type": "enabled", "selector": sel})
+    for sel in disabled:
+        assertions.append({"type": "disabled", "selector": sel})
+    for sel, val in text:
+        assertions.append({"type": "text", "selector": sel, "value": val})
+    for sel, n in count:
+        assertions.append({"type": "count", "selector": sel, "value": int(n)})
+
+    if not assertions:
+        click.echo("No assertions specified. Use --visible, --text, --url-pattern, etc.", err=True)
+        raise SystemExit(1)
+
+    try:
+        result = run_assertions(url, out_dir, assertions, browser_name=browser)
+        _echo(result.report())
+        if not result.all_passed:
+            raise SystemExit(1)
+    except SystemExit:
+        raise
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+
+
+# ---------------------------------------------------------------------------
+# sa har  -- HAR record + playback
+# ---------------------------------------------------------------------------
+
+@main.command()
+@click.argument("url")
+@click.option("--play",    default=None, type=click.Path(exists=True),
+              help="HAR file to replay instead of hitting the network")
+@click.option("--filter",  "url_filter", default=None, help="URL glob to include in HAR")
+@click.option("--update-missing", is_flag=True, default=False,
+              help="Fall back to network for requests not in HAR (playback only)")
+@click.option("--output", "-o", default=None, type=click.Path())
+@click.option("--browser", default="chromium", show_default=True)
+def har(url, play, url_filter, update_missing, output, browser):
+    """Record or replay a HAR (HTTP Archive) file.
+
+    Record:  sa har https://example.com
+    Replay:  sa har https://example.com --play session.har
+    """
+    from psr_ai.core.scraper import record_har, playback_har
+    out_dir = Path(output) if output else default_output_dir() / "har"
+    try:
+        if play:
+            result = playback_har(url, Path(play), out_dir,
+                                  update_missing=update_missing, browser_name=browser)
+            _echo(f"HAR replay: {url}")
+            _echo(result.report())
+        else:
+            result = record_har(url, out_dir, url_filter=url_filter, browser_name=browser)
+            _echo(result.report())
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+
+
+# ---------------------------------------------------------------------------
+# sa screenshot  -- Advanced screenshot
+# ---------------------------------------------------------------------------
+
+@main.command("screenshot")
+@click.argument("url")
+@click.option("--format", "fmt", default="png", type=click.Choice(["png", "jpeg"]), show_default=True)
+@click.option("--quality", default=None, type=int, help="JPEG quality 0-100")
+@click.option("--no-full-page", "no_full", is_flag=True, default=False)
+@click.option("--selector",  default=None, help="CSS selector to screenshot a single element")
+@click.option("--mask",      multiple=True, metavar="SELECTOR", help="Selectors to mask out (pink box)")
+@click.option("--omit-background", is_flag=True, default=False, help="Transparent background (PNG only)")
+@click.option("--animations", default="allow",
+              type=click.Choice(["allow", "disabled"]), show_default=True)
+@click.option("--scale", default="device", type=click.Choice(["device", "css"]), show_default=True)
+@click.option("--output", "-o", default=None, type=click.Path())
+@click.option("--browser", default="chromium", show_default=True)
+def screenshot_cmd(url, fmt, quality, no_full, selector, mask, omit_background,
+                   animations, scale, output, browser):
+    """Take an advanced screenshot with full Playwright option support.
+
+    Examples:
+      sa screenshot https://example.com --format jpeg --quality 85
+      sa screenshot https://example.com --selector h1 --mask ".ads"
+      sa screenshot https://example.com --omit-background
+    """
+    from psr_ai.core.scraper import screenshot_advanced
+    out_dir = Path(output) if output else default_output_dir() / "screenshots"
+    try:
+        result = screenshot_advanced(
+            url=url, output_dir=out_dir, fmt=fmt, quality=quality,
+            full_page=not no_full, selector=selector,
+            mask_selectors=list(mask) or None,
+            omit_background=omit_background, animations=animations,
+            scale=scale, browser_name=browser,
+        )
+        _echo(result.report())
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+
+
+# ---------------------------------------------------------------------------
+# sa pdf  -- Advanced PDF
+# ---------------------------------------------------------------------------
+
+@main.command("pdf")
+@click.argument("url")
+@click.option("--format", "fmt", default="A4", show_default=True,
+              help="Page format: A4, Letter, A3, Legal, Tabloid, etc.")
+@click.option("--landscape", is_flag=True, default=False)
+@click.option("--no-background", "no_bg", is_flag=True, default=False)
+@click.option("--margin-top",    default=None, help="e.g. 1cm, 0.5in")
+@click.option("--margin-bottom", default=None)
+@click.option("--margin-left",   default=None)
+@click.option("--margin-right",  default=None)
+@click.option("--header", default=None, help="HTML for page header")
+@click.option("--footer", default=None, help="HTML for page footer")
+@click.option("--page-ranges",   default=None, help="e.g. '1-3, 5'")
+@click.option("--scale",  default=1.0, type=float, show_default=True)
+@click.option("--output", "-o",  default=None, type=click.Path())
+@click.option("--browser",       default="chromium", show_default=True)
+def pdf_cmd(url, fmt, landscape, no_bg, margin_top, margin_bottom,
+            margin_left, margin_right, header, footer, page_ranges, scale, output, browser):
+    """Generate a PDF with full layout control.
+
+    Examples:
+      sa pdf https://example.com --landscape --format Letter
+      sa pdf https://example.com --margin-top 2cm --footer "<span>Page <span class='pageNumber'></span></span>"
+      sa pdf https://example.com --page-ranges "1-2"
+    """
+    from psr_ai.core.scraper import generate_pdf
+    out_dir = Path(output) if output else default_output_dir() / "pdf"
+    margin: dict | None = None
+    if any([margin_top, margin_bottom, margin_left, margin_right]):
+        margin = {
+            "top":    margin_top    or "0",
+            "bottom": margin_bottom or "0",
+            "left":   margin_left   or "0",
+            "right":  margin_right  or "0",
+        }
+    try:
+        result = generate_pdf(
+            url=url, output_dir=out_dir, fmt=fmt, landscape=landscape,
+            print_background=not no_bg, margin=margin,
+            header_template=header, footer_template=footer,
+            page_ranges=page_ranges, scale=scale, browser_name=browser,
+        )
+        _echo(result.report())
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+
+
+# ---------------------------------------------------------------------------
+# sa clock  -- Clock API
+# ---------------------------------------------------------------------------
+
+@main.command()
+@click.argument("url")
+@click.option("--fixed-time", default=None,
+              help="Freeze clock at ISO-8601 time, e.g. 2024-01-15T10:00:00")
+@click.option("--tick",  default=None, type=int, help="Advance clock by N ms after load")
+@click.option("--run-for", default=None, type=int, help="Fire all timers for N ms")
+@click.option("--eval", "eval_script", default=None, help="JS to evaluate after clock ops")
+@click.option("--output", "-o", default=None, type=click.Path())
+@click.option("--browser", default="chromium", show_default=True)
+def clock(url, fixed_time, tick, run_for, eval_script, output, browser):
+    """Browse a URL with the browser clock frozen or advanced.
+
+    Examples:
+      sa clock https://example.com --fixed-time "2024-12-31T23:59:59"
+      sa clock https://example.com --tick 3600000
+      sa clock https://example.com --run-for 5000 --eval "document.querySelector('.timer').innerText"
+    """
+    from psr_ai.core.scraper import browse_with_clock
+    out_dir = Path(output) if output else default_output_dir() / "clock"
+    try:
+        result = browse_with_clock(
+            url=url, output_dir=out_dir, fixed_time=fixed_time,
+            tick_ms=tick, run_for_ms=run_for, eval_script=eval_script,
+            browser_name=browser,
+        )
+        _echo(result.report())
+        if result.evaluated is not None:
+            _echo(f"  Eval result: {result.evaluated}")
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+
+
+# ---------------------------------------------------------------------------
+# sa cookies  -- Cookie management
+# ---------------------------------------------------------------------------
+
+@main.command()
+@click.argument("url")
+@click.option("--add",   multiple=True, metavar="name=value",
+              help="Add cookie in name=value format (domain inferred from URL)")
+@click.option("--clear", is_flag=True, default=False, help="Clear all cookies before loading")
+@click.option("--output", "-o", default=None, type=click.Path())
+@click.option("--browser", default="chromium", show_default=True)
+def cookies(url, add, clear, output, browser):
+    """Get, add, or clear cookies for a URL.
+
+    Examples:
+      sa cookies https://example.com
+      sa cookies https://example.com --add session=abc123 --add lang=en
+      sa cookies https://example.com --clear
+    """
+    from psr_ai.core.scraper import manage_cookies
+    import urllib.parse
+    out_dir = Path(output) if output else default_output_dir() / "cookies"
+    domain = urllib.parse.urlparse(url).hostname or ""
+    add_cookies: list[dict] | None = None
+    if add:
+        add_cookies = []
+        for item in add:
+            if "=" in item:
+                k, v = item.split("=", 1)
+                add_cookies.append({"name": k.strip(), "value": v.strip(), "domain": domain, "path": "/"})
+    try:
+        result = manage_cookies(url, out_dir, add_cookies=add_cookies,
+                                clear=clear, browser_name=browser)
+        _echo(result.report())
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+
+
+# ---------------------------------------------------------------------------
+# sa websockets  -- WebSocket monitor
+# ---------------------------------------------------------------------------
+
+@main.command()
+@click.argument("url")
+@click.option("--wait", "wait_ms", default=5000, show_default=True,
+              help="Ms to wait for WS traffic after page load")
+@click.option("--output", "-o", default=None, type=click.Path())
+@click.option("--browser", default="chromium", show_default=True)
+def websockets(url, wait_ms, output, browser):
+    """Monitor WebSocket frames on a page.
+
+    Examples:
+      sa websockets wss://echo.websocket.org
+      sa websockets https://example.com --wait 10000
+    """
+    from psr_ai.core.scraper import monitor_websockets
+    out_dir = Path(output) if output else default_output_dir() / "websockets"
+    try:
+        result = monitor_websockets(url, out_dir, wait_ms=wait_ms, browser_name=browser)
+        _echo(result.report())
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+
+
+# ---------------------------------------------------------------------------
+# sa events  -- page errors, request failures, service workers
+# ---------------------------------------------------------------------------
+
+@main.command()
+@click.argument("url")
+@click.option("--output", "-o", default=None, type=click.Path())
+@click.option("--browser", default="chromium", show_default=True)
+def events(url, output, browser):
+    """Capture page errors, failed requests, service workers, and console messages.
+
+    Examples:
+      sa events https://example.com
+    """
+    from psr_ai.core.scraper import monitor_page_events
+    out_dir = Path(output) if output else default_output_dir() / "events"
+    try:
+        result = monitor_page_events(url, out_dir, browser_name=browser)
+        _echo(result.report())
+        if result.output_file:
+            _echo(f"  Saved: {result.output_file}")
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+
+
+# ---------------------------------------------------------------------------
+# sa devices  -- list available device descriptors
+# ---------------------------------------------------------------------------
+
+@main.command()
+@click.option("--filter", "pattern", default=None, help="Filter by name substring (e.g. iphone)")
+def devices(pattern):
+    """List all available device emulation descriptors.
+
+    Examples:
+      sa devices
+      sa devices --filter iphone
+      sa devices --filter pixel
+    """
+    from psr_ai.core.scraper import DEVICE_MAP
+    names = sorted(DEVICE_MAP.keys())
+    if pattern:
+        names = [n for n in names if pattern.lower() in n]
+    click.echo(f"Available devices ({len(names)}):")
+    for name in names:
+        dev = DEVICE_MAP[name]
+        vp = dev.get("viewport", {})
+        w, h = vp.get("width", "?"), vp.get("height", "?")
+        mobile = "mobile" if dev.get("is_mobile") else "desktop"
+        click.echo(f"  {name:<30} {w}x{h}  ({mobile})")
