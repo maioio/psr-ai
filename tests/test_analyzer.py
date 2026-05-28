@@ -9,7 +9,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from psr_ai.core.analyzer import analyze_session, _PROVIDERS, _DEFAULT_MODELS
+from psr_ai.core.analyzer import (
+    analyze_session,
+    _PROVIDERS,
+    _DEFAULT_MODELS,
+    _detect_image_media_type,
+    _b64_to_bytes,
+)
 
 
 # Provide a fake API key for all tests so the pre-check in analyze_session does
@@ -266,3 +272,88 @@ def test_non_screenshot_steps_are_preserved_in_data_json(tmp_path):
     assert len(data["steps"]) == 2  # Both steps survive.
     assert data["steps"][0]["ai_description"] == "desc"
     assert "ai_description" not in data["steps"][1]  # No screenshot = no enrichment.
+
+
+# ------------------------------------------------------------------
+# MIME type detection (regression tests for JPEG-as-PNG bug fix)
+# ------------------------------------------------------------------
+
+# Minimal valid JPEG magic bytes (SOI marker + APP0)
+_TINY_JPEG = bytes([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00])
+
+# Minimal valid PNG magic bytes
+_TINY_PNG = bytes([
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+    0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+])
+
+
+class TestDetectImageMediaType:
+    def test_detects_jpeg_magic_bytes(self):
+        assert _detect_image_media_type(_TINY_JPEG) == "image/jpeg"
+
+    def test_detects_png_magic_bytes(self):
+        assert _detect_image_media_type(_TINY_PNG) == "image/png"
+
+    def test_unknown_format_falls_back_to_png(self):
+        assert _detect_image_media_type(b"\x00\x01\x02\x03unknown") == "image/png"
+
+    def test_empty_bytes_falls_back_to_png(self):
+        assert _detect_image_media_type(b"") == "image/png"
+
+    def test_jpeg_not_misidentified_as_png(self):
+        # This is the exact bug: JPEG bytes declared as PNG caused API rejection
+        assert _detect_image_media_type(_TINY_JPEG) != "image/png"
+
+
+class TestAnalyzeSessionMimeTypeFix:
+    """Verify analyze_session passes the correct MIME type when screenshots are JPEG."""
+
+    def _make_jpeg_session(self, tmp_path: Path) -> Path:
+        screenshots_dir = tmp_path / "screenshots"
+        screenshots_dir.mkdir()
+        # Write a file with .png extension but JPEG content (the actual bug scenario)
+        (screenshots_dir / "step_000.png").write_bytes(_TINY_JPEG)
+        steps = [{"index": 0, "label": "S", "timestamp": "", "program": "P",
+                  "action_text": "act", "screenshot": "screenshots/step_000.png"}]
+        data = {"title": "T", "source": "s.zip", "generated_at": "", "step_count": 1, "steps": steps}
+        (tmp_path / "data.json").write_text(json.dumps(data), encoding="utf-8")
+        return tmp_path
+
+    def test_jpeg_file_with_png_extension_uses_jpeg_mime(self, tmp_path):
+        source_dir = self._make_jpeg_session(tmp_path)
+        captured_calls = []
+
+        def capture_fn(image_b64, model):
+            raw = _b64_to_bytes(image_b64)
+            captured_calls.append(_detect_image_media_type(raw))
+            return "desc"
+
+        with patch.dict("psr_ai.core.analyzer._PROVIDERS", {"anthropic": (capture_fn, "m")}):
+            enriched = analyze_session(source_dir, provider="anthropic", regenerate=False)
+
+        assert enriched == 1
+        assert captured_calls == ["image/jpeg"], (
+            "MIME type must be image/jpeg for JPEG bytes — was image/png before the fix"
+        )
+
+    def test_true_png_file_still_uses_png_mime(self, tmp_path):
+        screenshots_dir = tmp_path / "screenshots"
+        screenshots_dir.mkdir()
+        (screenshots_dir / "step_000.png").write_bytes(_TINY_PNG)
+        steps = [{"index": 0, "label": "S", "timestamp": "", "program": "P",
+                  "action_text": "act", "screenshot": "screenshots/step_000.png"}]
+        data = {"title": "T", "source": "s.zip", "generated_at": "", "step_count": 1, "steps": steps}
+        (tmp_path / "data.json").write_text(json.dumps(data), encoding="utf-8")
+
+        captured_calls = []
+
+        def capture_fn(image_b64, model):
+            raw = _b64_to_bytes(image_b64)
+            captured_calls.append(_detect_image_media_type(raw))
+            return "desc"
+
+        with patch.dict("psr_ai.core.analyzer._PROVIDERS", {"anthropic": (capture_fn, "m")}):
+            analyze_session(tmp_path, provider="anthropic", regenerate=False)
+
+        assert captured_calls == ["image/png"]

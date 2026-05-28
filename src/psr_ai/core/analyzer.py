@@ -9,17 +9,40 @@ from typing import Callable
 
 
 # ---------------------------------------------------------------------------
+# Image format detection
+# ---------------------------------------------------------------------------
+
+def _detect_image_media_type(data: bytes) -> str:
+    """Return the true MIME type of image bytes by inspecting magic bytes.
+
+    Supports JPEG and PNG. Falls back to image/png for unrecognised formats so
+    the existing behaviour is preserved for edge cases.
+    """
+    if data[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    return "image/png"
+
+
+def _b64_to_bytes(image_b64: str) -> bytes:
+    return base64.b64decode(image_b64)
+
+
+# ---------------------------------------------------------------------------
 # Provider dispatch
 # ---------------------------------------------------------------------------
 
 def _analyze_with_anthropic(image_b64: str, model: str) -> str:
-    """Send one base64-encoded PNG to Anthropic and return a one-sentence description."""
+    """Send one base64-encoded image to Anthropic and return a one-sentence description."""
     try:
         import anthropic
     except ImportError as exc:
         raise ImportError(
             "anthropic package required. Install with: pip install psr-ai[ai]"
         ) from exc
+
+    media_type = _detect_image_media_type(_b64_to_bytes(image_b64))
 
     client = anthropic.Anthropic()
     message = client.messages.create(
@@ -33,7 +56,7 @@ def _analyze_with_anthropic(image_b64: str, model: str) -> str:
                         "type": "image",
                         "source": {
                             "type": "base64",
-                            "media_type": "image/png",
+                            "media_type": media_type,
                             "data": image_b64,
                         },
                     },
@@ -53,13 +76,15 @@ def _analyze_with_anthropic(image_b64: str, model: str) -> str:
 
 
 def _analyze_with_openai(image_b64: str, model: str) -> str:
-    """Send one base64-encoded PNG to OpenAI and return a one-sentence description."""
+    """Send one base64-encoded image to OpenAI and return a one-sentence description."""
     try:
         import openai
     except ImportError as exc:
         raise ImportError(
             "openai package required. Install with: pip install psr-ai[ai]"
         ) from exc
+
+    media_type = _detect_image_media_type(_b64_to_bytes(image_b64))
 
     client = openai.OpenAI()
     response = client.chat.completions.create(
@@ -71,7 +96,7 @@ def _analyze_with_openai(image_b64: str, model: str) -> str:
                 "content": [
                     {
                         "type": "image_url",
-                        "image_url": {"url": f"data:image/png;base64,{image_b64}"},
+                        "image_url": {"url": f"data:{media_type};base64,{image_b64}"},
                     },
                     {
                         "type": "text",
