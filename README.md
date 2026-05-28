@@ -2,7 +2,7 @@
 
 > Record any workflow once. Let AI agents understand it forever.
 
-<!-- Demo GIF coming soon — see docs/assets/ -->
+![PSR.ai Demo](docs/assets/PSR_ai_v1_0_0_Demo.gif)
 
 PSR.ai turns raw screen recordings into structured, machine-readable documentation in one command - preventing AI token bleeding, cutting API costs by up to 80%, and enabling autonomous self-healing pipelines across Windows, macOS, and Linux.
 
