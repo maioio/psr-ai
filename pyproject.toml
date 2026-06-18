@@ -35,6 +35,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+cloud   = ["aiohttp>=3.9"]
 gif     = ["Pillow>=10.0"]
 ai      = ["anthropic>=0.25", "openai>=1.0"]
 desktop = ["pynput>=1.7"]
@@ -42,7 +43,16 @@ agent   = ["pyautogui>=0.9.54", "Pillow>=10.0", "anthropic>=0.25"]
 capture  = ["playwright>=1.40", "pypdf>=4.0"]
 download = ["yt-dlp>=2024.1", "gallery-dl>=1.27"]
 instagram = ["instagrapi>=2.0"]
-analyze  = ["openai-whisper>=20231117", "yt-dlp>=2024.1"]
+analyze  = ["faster-whisper>=1.0", "yt-dlp>=2024.1"]
+analyze-legacy = ["openai-whisper>=20231117", "yt-dlp>=2024.1"]
+full = [
+    "anthropic>=0.25",
+    "faster-whisper>=1.0",
+    "yt-dlp>=2024.1",
+    "Pillow>=10.0",
+    "playwright>=1.40",
+    "pynput>=1.7",
+]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",

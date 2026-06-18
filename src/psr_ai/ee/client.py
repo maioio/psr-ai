@@ -43,9 +43,13 @@ class PSRCloudClient:
         if not data_json.exists():
             raise FileNotFoundError(f"data.json not found in {session_dir}")
 
-        # NOTE: Real implementation would use aiohttp or httpx to stream the
-        # session archive. This stub validates the session and returns a mock
-        # response so the interface can be tested without a live endpoint.
+        # TODO [Roo]: Replace this stub with a real aiohttp streaming upload to self.endpoint
+        # CONTEXT: Stub exists because cloud endpoint URL was not finalized at time of writing
+        # INPUTS: session_dir: Path (contains data.json), on_progress: Callable[[str], None] | None
+        # OUTPUTS: dict with keys session_id: str, step_count: int, status: str
+        # CONSTRAINTS: do not change the method signature, do not touch __init__, do not add new public methods
+        # TESTS: assert return_value["session_id"] != "" and return_value["status"] == "accepted"
+        # NOTE: Real implementation — wrap aiohttp calls in try/except RuntimeError; missing except is a HIGH security-audit finding
         session_data = json.loads(data_json.read_text(encoding="utf-8"))
         step_count = session_data.get("step_count", 0)
 
