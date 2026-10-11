@@ -1,0 +1,21 @@
+{
+  "name": "PSR.ai",
+  "package": "psr-ai",
+  "version": "0.2.0",
+  "license": "MIT",
+  "python_min": "3.10",
+  "cli_entry_point": "sa",
+  "cli_commands": 42,
+  "mcp_tools": 7,
+  "mcp_tool_names": [
+    "psr_start_recording",
+    "psr_stop_and_parse",
+    "psr_quick_snapshot",
+    "psr_open_context_browser",
+    "psr_get_browser_context",
+    "psr_context_status",
+    "psr_fetch_link"
+  ],
+  "repository": "https://github.com/maioio/psr-ai",
+  "website": "https://maioio.github.io/psr-ai/"
+}

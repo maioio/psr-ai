@@ -1,0 +1,378 @@
+---
+import { Image } from 'astro:assets';
+import mark from '../assets/psr-ai-mark.png';
+import facts from '../../../data/public-product-facts.json';
+
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+const doc = (slug: string) => `${base}/${slug}/`;
+const repo = facts.repository;
+const title = 'PSR.ai: record a workflow once, let AI agents understand it';
+const description =
+  'PSR.ai records any desktop workflow and turns it into structured, machine-readable output: a Markdown report, data.json, screenshots and a GIF replay, ready for an AI agent or MCP client.';
+const canonical = facts.website;
+
+const flow = [
+  ['Record', 'sa start captures each step in the background: program, action, timestamp, screenshot.'],
+  ['Parse', 'sa stop turns the session into report.md, data.json, screenshots and a GIF replay.'],
+  ['Enrich', 'Optional: sa analyze describes each screenshot; sa review drops steps you do not want to keep.'],
+  ['Use', 'Hand it to an agent over MCP, replay it, turn it into a test, or heal a failing one.'],
+  ['Publish', 'Optional: sa pub or sa pipeline commits the session to your docs and can open a PR.'],
+];
+
+const goals = [
+  ['Document a workflow', 'sa start', 'Record once and get a step-by-step report with screenshots.', 'recording'],
+  ['Debug a web bug', 'sa context install', 'Attach failed requests and console errors to the step where they happened.', 'hidden-context-layer'],
+  ['Give an agent the context', 'sa mcp install', 'Register the MCP server with Claude Desktop so an agent can record and read sessions.', 'mcp'],
+  ['Describe and clean steps', 'sa analyze', 'A vision model writes a description per screenshot; sa review lets you drop steps.', 'ai-analysis'],
+  ['Turn a session into a test', 'sa testgen', 'Generate a Playwright test from the recorded steps.', 'replay-and-tests'],
+  ['Capture a web page', 'sa capture <url>', 'Save a page as PDF or PNG, or crawl a site into one PDF.', 'browser-toolkit'],
+];
+
+const docs = [
+  ['getting-started', 'Getting started'],
+  ['recording', 'Recording'],
+  ['output-format', 'Output format'],
+  ['mcp', 'MCP server'],
+  ['hidden-context-layer', 'Hidden Context Layer'],
+  ['ai-analysis', 'AI analysis and review'],
+  ['replay-and-tests', 'Replay, agents and tests'],
+  ['commands', 'Commands'],
+  ['browser-toolkit', 'Browser toolkit'],
+  ['platforms', 'Platforms'],
+  ['privacy-and-security', 'Privacy and security'],
+  ['troubleshooting', 'Troubleshooting'],
+  ['limitations', 'Limitations'],
+  ['contributing', 'Contributing'],
+];
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonical} />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={`${canonical}social-card.png`} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="PSR.ai: record any workflow once, let AI agents understand it" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:image" content={`${canonical}social-card.png`} />
+    <link rel="icon" href={`${base}/favicon.ico`} sizes="any" />
+    <link rel="icon" type="image/png" sizes="32x32" href={`${base}/favicon-32.png`} />
+    <link rel="apple-touch-icon" href={`${base}/apple-touch-icon.png`} />
+    <script is:inline>
+      try {
+        const t = localStorage.getItem('psr-theme');
+        if (t) document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    </script>
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+    <header class="top">
+      <a class="brand" href={`${base}/`}>
+        <span class="chip"><Image src={mark} alt="" width={28} height={28} loading="eager" /></span>
+        <span>PSR.ai</span>
+      </a>
+      <nav aria-label="Primary">
+        <a href={doc('getting-started')}>Docs</a>
+        <a href={repo}>GitHub</a>
+        <button id="theme" type="button" aria-label="Toggle color theme">Theme</button>
+      </nav>
+    </header>
+
+    <main id="main">
+      <section class="hero">
+        <div class="hero-brand">
+          <span class="chip lg"><Image src={mark} alt="PSR.ai logo" width={60} height={60} loading="eager" /></span>
+        </div>
+        <p class="kicker">v{facts.version} &middot; {facts.license}</p>
+        <h1>Record any workflow once.<br />Let AI agents understand it.</h1>
+        <p class="lede">
+          PSR.ai records what you do on your desktop and turns it into structured output an AI agent can read: a
+          Markdown report, <code>data.json</code>, screenshots and a GIF replay. With the browser extension it also
+          captures the failed requests and console errors that a screenshot cannot show.
+        </p>
+        <div class="cta">
+          <a class="btn primary" href={doc('getting-started')}>Get started</a>
+          <a class="btn" href={repo}>View on GitHub</a>
+        </div>
+        <pre tabindex="0" class="term" aria-label="Install from source"><code>git clone https://github.com/maioio/psr-ai
+cd psr-ai
+pip install -e ".[gif]"</code></pre>
+        <p class="note">Installs from source: PSR.ai is not on PyPI yet. Recording from the command line works on Windows; on macOS and Linux it is <a href={doc('platforms')}>not finished yet</a>.</p>
+      </section>
+
+      <section aria-labelledby="how">
+        <h2 id="how">Three commands</h2>
+        <div class="cols">
+          <article class="card">
+            <h3>Start</h3>
+            <pre tabindex="0"><code>sa start</code></pre>
+            <p>Recording runs in the background. On Windows it uses Steps Recorder when the system allows it, otherwise a local capture daemon. On macOS and Linux, <code>sa start</code> and <code>sa stop</code> do not work together yet.</p>
+          </article>
+          <article class="card">
+            <h3>Stop</h3>
+            <pre tabindex="0"><code>sa stop</code></pre>
+            <p>Parses the session and writes <code>report.md</code>, <code>data.json</code>, screenshots and <code>action_replay.gif</code>.</p>
+          </article>
+          <article class="card">
+            <h3>Connect</h3>
+            <pre tabindex="0"><code>sa mcp install</code></pre>
+            <p>Registers the MCP server with Claude Desktop, so an agent can start, stop and read recordings itself.</p>
+          </article>
+        </div>
+        <p><a href={doc('recording')}>How recording works</a></p>
+      </section>
+
+      <section aria-labelledby="output">
+        <h2 id="output">What you get</h2>
+        <pre tabindex="0" class="term" aria-label="Output folder"><code>psr_20240115_143000_output/
+  report.md            AI Context Block, table of contents, timeline
+  data.json            every step as structured data
+  action_replay.gif    animated replay of the session
+  screenshots/
+    step_000.png</code></pre>
+        <p>
+          The report opens with an AI Context Block: one line per step, short enough to paste into any prompt. The
+          format is fixed:
+        </p>
+        <pre tabindex="0" class="term" aria-label="AI Context Block format"><code>[STEP_ID] TIMESTAMP | PROGRAM | ACTION -> SCREENSHOT_PATH</code></pre>
+        <p class="note">
+          Consecutive repetitive steps in the same program within five seconds are merged into one range such as
+          <code>[4-9]</code>. <a href={doc('output-format')}>Full output format</a>
+        </p>
+      </section>
+
+      <section aria-labelledby="hidden">
+        <h2 id="hidden">The Hidden Context Layer</h2>
+        <p>
+          A screenshot shows a spinner. It does not show the 500 behind it. The optional browser extension records
+          failed network requests, console errors and the accessibility details of what you clicked, without opening
+          DevTools. It sends them only to a listener on <code>127.0.0.1</code>, and only while a recording is active.
+          <code>sa stop</code> attaches each event to the step it belongs to.
+        </p>
+        <pre tabindex="0" class="term" aria-label="Install the context layer"><code>sa context install
+sa context doctor</code></pre>
+        <p><a href={doc('hidden-context-layer')}>How the context layer works</a></p>
+      </section>
+
+      <section aria-labelledby="self">
+        <h2 id="self">Facts from the code</h2>
+        <p>
+          These figures are generated from the source by a script and checked before the site builds. They are not
+          typed by hand. Source:
+          <a href={`${repo}/blob/master/data/public-product-facts.json`}>data/public-product-facts.json</a>.
+        </p>
+        <dl class="facts">
+          <div><dt>Version</dt><dd>{facts.version}</dd></div>
+          <div><dt>License</dt><dd>{facts.license}</dd></div>
+          <div><dt>Python</dt><dd>{facts.python_min}+</dd></div>
+          <div><dt>CLI commands</dt><dd>{facts.cli_commands}</dd></div>
+          <div><dt>MCP tools</dt><dd>{facts.mcp_tools}</dd></div>
+        </dl>
+      </section>
+
+      <section aria-labelledby="flow">
+        <h2 id="flow">From screen to structured context</h2>
+        <ol class="flow">
+          {flow.map(([name, text]) => (
+            <li><strong>{name}</strong><span>{text}</span></li>
+          ))}
+        </ol>
+      </section>
+
+      <section aria-labelledby="goals">
+        <h2 id="goals">Capabilities by goal</h2>
+        <ul class="goals">
+          {goals.map(([name, cmd, text, slug]) => (
+            <li>
+              <h3>{name}</h3>
+              <code>{cmd}</code>
+              <p>{text}</p>
+              <a href={doc(slug)}>Read more<span class="sr"> about {name}</span></a>
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      <section aria-labelledby="safety">
+        <h2 id="safety">Privacy and safety</h2>
+        <ul class="plain">
+          <li>
+            Recordings stay on your machine. Images leave it only when you run <code>analyze</code>,
+            <code>replay</code>, <code>agent</code>, <code>watch</code> or <code>video-analyze</code>, which send them
+            to an AI provider, or when you publish with <code>pub</code> or <code>pipeline</code>.
+          </li>
+          <li>
+            When Playwright is installed, <code>sa stop</code> opens the browser URLs it finds in the recording again in a
+            headless Chromium to fetch the HTML of the clicked element. That makes network requests to those sites from
+            your machine, and there is no option to turn it off yet.
+          </li>
+          <li>Clipboard capture is off by default. With <code>--clipboard</code> it is redacted and truncated.</li>
+          <li>
+            The context listener binds to <code>127.0.0.1</code>, requires a token, rejects requests from web pages
+            and redacts secrets such as cookies, tokens and passwords.
+          </li>
+          <li><code>sa review</code> lets you drop any step, including its screenshot, before you share a session.</li>
+          <li><code>agent</code>, <code>replay</code> and <code>watch</code> only print the actions they plan until you pass <code>--no-dry-run</code>. Dry runs still send a screenshot to the AI provider at every step.</li>
+          <li><code>sa start --no-context</code> records without the browser layer.</li>
+        </ul>
+        <p><a href={doc('privacy-and-security')}>Privacy and security</a></p>
+      </section>
+
+      <section aria-labelledby="integrations">
+        <h2 id="integrations">Works with your agent</h2>
+        <p>
+          The built-in MCP server exposes {facts.mcp_tools} MCP tools over stdio: start and stop a recording, take a
+          snapshot, open the context browser, read browser events, check listener status and fetch a link. Any MCP
+          client can use them; <code>sa mcp install</code> configures Claude Desktop for you.
+        </p>
+        <p><a href={doc('mcp')}>MCP server</a></p>
+      </section>
+
+      <section aria-labelledby="install">
+        <h2 id="install">Install</h2>
+        <pre tabindex="0" class="term"><code>git clone https://github.com/maioio/psr-ai
+cd psr-ai
+pip install -e ".[gif]"
+sa --version</code></pre>
+        <p>Python {facts.python_min} or newer. PSR.ai is not on PyPI yet, so install it from source.</p>
+      </section>
+
+      <section aria-labelledby="not">
+        <h2 id="not">When not to use it</h2>
+        <ul class="plain">
+          <li>You need continuous video. PSR.ai records steps and screenshots, not a screen recording.</li>
+          <li>You record on macOS or Linux. Recording from the command line does not work there yet.</li>
+          <li>You test only in headless browsers. The extension does not start in headless mode, so there is no context layer.</li>
+          <li>You cannot review screens before sharing them. Screenshots capture whatever is visible.</li>
+          <li>You need zero-setup Chrome support. Current Chrome needs the extension loaded by hand; Edge loads it automatically.</li>
+        </ul>
+        <p><a href={doc('limitations')}>All limitations</a></p>
+      </section>
+
+      <section aria-labelledby="docs">
+        <h2 id="docs">Documentation</h2>
+        <ul class="doclist">
+          {docs.map(([slug, label]) => <li><a href={doc(slug)}>{label}</a></li>)}
+        </ul>
+      </section>
+
+      <section class="final" aria-labelledby="start">
+        <h2 id="start">Record your first workflow</h2>
+        <div class="cta">
+          <a class="btn primary" href={doc('getting-started')}>Get started</a>
+          <a class="btn" href={repo}>Read the source</a>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <p>
+        PSR.ai v{facts.version} &middot; {facts.license} &middot;
+        <a href={repo}>GitHub</a> &middot; <a href={`${repo}/blob/master/LICENSE`}>License</a>
+      </p>
+    </footer>
+
+    <script is:inline>
+      document.getElementById('theme').addEventListener('click', function () {
+        var cur = document.documentElement.dataset.theme ||
+          (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+        var next = cur === 'dark' ? 'light' : 'dark';
+        document.documentElement.dataset.theme = next;
+        try { localStorage.setItem('psr-theme', next); } catch (e) {}
+      });
+    </script>
+  </body>
+</html>
+
+<style is:global>
+  :root {
+    --bg: #0e1116; --fg: #e8eaed; --muted: #a3aab5; --line: #262c36; --card: #151a21;
+    --accent: #7aa2f7; --accent-fg: #0b1020; --chip: #ffffff;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme='dark']) {
+      --bg: #fbfaf7; --fg: #1b1f24; --muted: #4f5864; --line: #dcd9d0; --card: #ffffff;
+      --accent: #2f55b8; --accent-fg: #ffffff; --chip: transparent;
+    }
+  }
+  :root[data-theme='light'] {
+    --bg: #fbfaf7; --fg: #1b1f24; --muted: #4f5864; --line: #dcd9d0; --card: #ffffff;
+    --accent: #2f55b8; --accent-fg: #ffffff; --chip: transparent;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 17px/1.6 var(--sans); }
+  a { color: var(--accent); text-underline-offset: 3px; }
+  a:focus-visible, button:focus-visible, pre:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  .skip { position: absolute; left: -999px; }
+  .skip:focus { left: 16px; top: 8px; background: var(--card); padding: 8px 12px; z-index: 10; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .top { display: flex; justify-content: space-between; align-items: center; max-width: 960px; margin: 0 auto; padding: 16px; }
+  .top nav { display: flex; gap: 20px; align-items: center; }
+  .top a { color: var(--fg); text-decoration: none; }
+  .brand { font-weight: 600; display: inline-flex; align-items: center; gap: 10px; white-space: nowrap; }
+  /* The mark is a dark disc; in dark mode it sits on a white chip so it stays visible. */
+  .chip { display: inline-flex; align-items: center; justify-content: center; background: var(--chip); border-radius: 999px; padding: 2px; line-height: 0; }
+  .chip img { display: block; height: auto; }
+  .brand .chip img { width: 26px; height: 26px; }
+  .chip.lg { padding: 6px; border-radius: 999px; }
+  .hero-brand { margin: 0 0 20px; }
+  @media (max-width: 480px) { .top { padding: 12px 16px; } .top nav { gap: 12px; } .brand { font-size: 16px; gap: 8px; } }
+  @media (max-width: 380px) { .top nav { gap: 8px; } .top button { padding: 6px 8px; } .brand { font-size: 15px; } }
+  @media (max-width: 340px) { .top { padding: 12px 10px; } .top nav { gap: 6px; font-size: 15px; } .brand { font-size: 14px; gap: 6px; } .brand .chip { padding: 2px; } }
+  .hero-brand img { width: 52px; height: 52px; }
+  @media (min-width: 720px) { .hero-brand img { width: 60px; height: 60px; } }
+  .top button { background: none; border: 1px solid var(--line); color: var(--fg); border-radius: 6px; padding: 6px 10px; font: inherit; font-size: 14px; cursor: pointer; }
+  main, footer { max-width: 960px; margin: 0 auto; padding: 0 16px; }
+  section { padding: 48px 0; border-top: 1px solid var(--line); }
+  .hero { border-top: 0; padding-top: 56px; }
+  .kicker { font-family: var(--mono); font-size: 14px; color: var(--muted); margin: 0 0 16px; }
+  h1 { font-size: clamp(2rem, 6vw, 3.4rem); line-height: 1.1; letter-spacing: -0.02em; margin: 0 0 20px; font-weight: 650; }
+  h2 { font-size: 1.5rem; margin: 0 0 16px; letter-spacing: -0.01em; }
+  h3 { font-size: 1.05rem; margin: 0 0 8px; }
+  .lede { font-size: 1.15rem; color: var(--muted); max-width: 62ch; }
+  .cta { display: flex; gap: 12px; flex-wrap: wrap; margin: 24px 0; }
+  .btn { display: inline-block; padding: 10px 18px; border: 1px solid var(--line); border-radius: 8px; color: var(--fg); text-decoration: none; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 600; }
+  pre { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; overflow-x: auto; margin: 12px 0; }
+  code { font-family: var(--mono); font-size: 0.92em; }
+  .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 20px; }
+  .card pre { margin-top: 0; }
+  .card p { color: var(--muted); font-size: 0.95rem; margin-bottom: 0; }
+  .note { color: var(--muted); font-size: 0.95rem; }
+  .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin: 20px 0 0; }
+  .facts div { border: 1px solid var(--line); border-radius: 8px; padding: 14px; background: var(--card); }
+  .facts dt { font-size: 13px; color: var(--muted); }
+  .facts dd { margin: 4px 0 0; font-size: 1.8rem; font-weight: 650; overflow-wrap: anywhere; }
+  .flow { list-style: none; counter-reset: s; padding: 0; margin: 0; display: grid; gap: 10px; }
+  .flow li { counter-increment: s; display: grid; grid-template-columns: 2rem 7rem 1fr; gap: 8px; align-items: baseline; padding: 10px 0; border-bottom: 1px solid var(--line); }
+  .flow li::before { content: counter(s); font-family: var(--mono); color: var(--muted); }
+  .flow span { color: var(--muted); }
+  .goals { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+  .goals li { border: 1px solid var(--line); border-radius: 10px; padding: 18px; background: var(--card); }
+  .goals p { margin: 8px 0; color: var(--muted); font-size: 0.95rem; }
+  .plain { padding-left: 20px; }
+  .plain li { margin: 6px 0; }
+  .doclist { columns: 2; list-style: none; padding: 0; }
+  .doclist li { padding: 4px 0; }
+  .final { text-align: left; }
+  footer { padding: 32px 16px 56px; color: var(--muted); font-size: 14px; border-top: 1px solid var(--line); }
+  @media (max-width: 560px) {
+    .flow li { grid-template-columns: 1.5rem 1fr; }
+    .flow li span { grid-column: 2; }
+    .doclist { columns: 1; }
+  }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+</style>
