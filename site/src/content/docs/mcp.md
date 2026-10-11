@@ -64,7 +64,7 @@ A JSON line with `serverInfo` means the server works. Close input or press Ctrl-
 | `psr_start_recording` | `output_path`, `max_screenshots` (default 100) | Starts a recording, like `sa start`. |
 | `psr_stop_and_parse` | none | Stops the recording, waits up to 10 seconds for the ZIP, writes `report.md` and `data.json`, and returns the report text. |
 | `psr_quick_snapshot` | `max_px` (default 1280), `colors` (2 to 256, default 128) | Takes one screenshot, shrinks and quantizes it, and returns it as a Base64 PNG. Needs the `gif` extra. |
-| `psr_open_context_browser` | `browser`, `url` | Opens a browser with the [Hidden Context Layer](/psr-ai/hidden-context-layer/), like `sa context browser`. |
+| `psr_open_context_browser` | `browser`, `url` | Opens a browser with the [Hidden Context Layer](/psr-ai/hidden-context-layer/), like `sa context browser`. `url` must be `http://` or `https://`. |
 | `psr_get_browser_context` | `kind`, `limit` (default 50), `session_dir` | Returns the browser events captured so far, as JSON. |
 | `psr_context_status` | none | Reports whether the listener runs, which session it serves, how many events it holds, and which browsers are available. |
 | `psr_fetch_link` | `url` (required), `max_chars` (default 8000) | Returns the text of a web page. See [the note below](#psr_fetch_link-and-your-browser-profile). |

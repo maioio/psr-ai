@@ -78,11 +78,19 @@ class TestLaunchCommand:
         target = self._target(tmp_path)
         args = cb.build_launch_command(target, url="https://example.com", extension=tmp_path / "ext")
         assert args[-1] == "https://example.com"
+        # "--" ends switch parsing, so the URL can never be read as a flag.
+        assert args[-2] == "--"
 
     def test_no_url_means_no_trailing_argument(self, tmp_path):
         target = self._target(tmp_path)
         args = cb.build_launch_command(target, extension=tmp_path / "ext")
         assert not args[-1].startswith("http")
+        assert "--" not in args
+
+    def test_command_refuses_a_flag_as_url(self, tmp_path):
+        target = self._target(tmp_path)
+        with pytest.raises(ValueError):
+            cb.build_launch_command(target, url="--gpu-launcher=calc", extension=tmp_path / "ext")
 
     def test_disable_extensions_except_is_paired_with_load(self, tmp_path):
         """Chromium only honours --load-extension alongside this flag."""
@@ -90,6 +98,39 @@ class TestLaunchCommand:
         ext = tmp_path / "ext"
         args = cb.build_launch_command(target, extension=ext)
         assert f"--disable-extensions-except={ext}" in args
+
+
+# ---------------------------------------------------------------------------
+# URL validation
+# ---------------------------------------------------------------------------
+
+class TestValidateUrl:
+
+    @pytest.mark.parametrize("url", [
+        "https://example.com",
+        "http://localhost:3000/path?q=1#top",
+        "HTTPS://Example.com/",
+    ])
+    def test_accepts_http_and_https(self, url):
+        assert cb.validate_url(url) == url
+
+    @pytest.mark.parametrize("url", [
+        "--gpu-launcher=calc",
+        "-no-sandbox",
+        "javascript:alert(1)",
+        "file:///etc/passwd",
+        "chrome://settings",
+        "data:text/html,hi",
+        "http://",
+        "example.com",
+        "https://example.com/a b",
+        'https://example.com/"',
+        "https://example.com/\n--gpu-launcher=calc",
+        "https://example.com/\x00",
+    ])
+    def test_rejects_everything_else(self, url):
+        with pytest.raises(ValueError):
+            cb.validate_url(url)
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +188,16 @@ class TestLaunch:
         names = [b.name for b in cb.find_browsers(profile_dir=tmp_path)]
         if "Chrome" in names and "Edge" in names:
             assert names.index("Edge") < names.index("Chrome")
+
+    def test_launch_rejects_a_bad_url_before_anything_runs(self):
+        with (
+            patch.object(cb, "find_browser") as find,
+            patch.object(cb.subprocess, "Popen") as popen,
+        ):
+            with pytest.raises(ValueError):
+                cb.launch(url="--gpu-launcher=calc")
+        find.assert_not_called()
+        popen.assert_not_called()
 
     def test_launch_without_a_browser_raises(self, tmp_path):
         with patch.object(cb, "find_browser", return_value=None):
@@ -287,3 +338,12 @@ class TestMcpContextTools:
         with patch("psr_ai.core.context_browser.launch", side_effect=OSError("denied")):
             result = mcp._dispatch_tool("psr_open_context_browser", {})
         assert "Could not start the browser" in result
+
+    def test_open_context_browser_refuses_a_flag_as_url(self):
+        """The url comes from an agent; a Chromium switch there must never launch."""
+        with patch.object(cb.subprocess, "Popen") as popen:
+            result = mcp._dispatch_tool(
+                "psr_open_context_browser", {"url": "--gpu-launcher=calc"}
+            )
+        popen.assert_not_called()
+        assert "Only http:// and https://" in result

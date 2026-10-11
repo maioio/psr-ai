@@ -501,6 +501,14 @@ class TestContextCommands:
         assert result.exit_code == 1
         assert "ignores it" in result.stderr
 
+    def test_browser_command_refuses_a_flag_as_url(self):
+        from psr_ai.core import context_browser
+        with patch.object(context_browser.subprocess, "Popen") as popen:
+            result = _invoke(["context", "browser", "--url=--gpu-launcher=calc"])
+        popen.assert_not_called()
+        assert result.exit_code == 1
+        assert "Only http:// and https://" in result.stderr
+
     def test_install_points_at_a_real_manifest(self):
         from psr_ai.cli import _extension_dir
         assert (_extension_dir() / "manifest.json").is_file()
@@ -647,3 +655,27 @@ class TestContextWiring:
     def test_enrich_survives_a_missing_data_json(self, tmp_path):
         from psr_ai.cli import _enrich_with_context
         _enrich_with_context(tmp_path / "absent.json", tmp_path, include_clipboard=False)
+
+
+class TestDotenv:
+
+    def test_home_file_is_loaded_and_cwd_file_is_not(self, tmp_path, monkeypatch):
+        """A file in the working directory may come from an untrusted repository."""
+        import os
+        from psr_ai import cli
+
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / ".env").write_text("PSR_AI_DOTENV_HOME=from-home\n", encoding="utf-8")
+        work = tmp_path / "work"
+        work.mkdir()
+        (work / ".env").write_text("PSR_AI_DOTENV_CWD=from-cwd\n", encoding="utf-8")
+
+        monkeypatch.setattr(cli.Path, "home", lambda: home)
+        monkeypatch.chdir(work)
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("PSR_AI_DOTENV_HOME", None)
+            os.environ.pop("PSR_AI_DOTENV_CWD", None)
+            cli._load_dotenv()
+            assert os.environ.get("PSR_AI_DOTENV_HOME") == "from-home"
+            assert "PSR_AI_DOTENV_CWD" not in os.environ

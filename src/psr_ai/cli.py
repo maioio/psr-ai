@@ -12,8 +12,14 @@ import click
 
 
 def _load_dotenv() -> None:
-    """Load ~/.env and ./.env into os.environ (no dependencies required)."""
-    for env_path in (Path.home() / ".env", Path(".env")):
+    """Load ~/.env into os.environ (no dependencies required).
+
+    Only the home directory is read. A .env in the current directory is not:
+    `sa` runs inside repositories the user did not write, and such a file
+    could set variables like NODE_OPTIONS that reach the subprocesses `sa`
+    starts.
+    """
+    for env_path in (Path.home() / ".env",):
         if not env_path.exists():
             continue
         try:
@@ -606,6 +612,9 @@ def context_browser(preferred: str | None, url: str | None) -> None:
 
     try:
         browser, pid = cb.launch(preferred=preferred, url=url)
+    except ValueError as exc:
+        _warn(f"Error: {exc}")
+        raise SystemExit(1)
     except cb.UnsupportedBrowserError as exc:
         _warn(f"Error: {exc}")
         raise SystemExit(1)

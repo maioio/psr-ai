@@ -37,6 +37,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 DEFAULT_PROFILE_DIR = Path.home() / ".psr_ai" / "browser_profile"
 
@@ -169,6 +170,22 @@ def extension_dir() -> Path:
         return Path(__file__).resolve().parent.parent / "extension"
 
 
+def validate_url(url: str) -> str:
+    """Return url unchanged if it is a plain http(s) address, else raise ValueError.
+
+    The URL is placed on the browser's command line, and the MCP tool takes it
+    from an agent. Anything else there - a value starting with '-' above all -
+    would be read as a Chromium switch such as --gpu-launcher, which runs an
+    arbitrary program.
+    """
+    if any(ch.isspace() or ord(ch) < 0x20 or ch in '"\x7f' for ch in url):
+        raise ValueError("URL must not contain spaces, quotes or control characters.")
+    parts = urlsplit(url)
+    if parts.scheme.lower() not in ("http", "https") or not parts.netloc:
+        raise ValueError(f"Only http:// and https:// URLs can be opened, got {url!r}.")
+    return url
+
+
 def build_launch_command(
     browser: BrowserTarget,
     url: str | None = None,
@@ -184,7 +201,8 @@ def build_launch_command(
         *_BASE_FLAGS,
     ]
     if url:
-        args.append(url)
+        # "--" ends Chromium's switch parsing, so the URL can never act as a flag.
+        args.extend(["--", validate_url(url)])
     return args
 
 
@@ -201,10 +219,13 @@ def launch(
 ) -> tuple[BrowserTarget, int]:
     """Start an instrumented browser. Returns (browser, pid).
 
-    Raises FileNotFoundError when no supported browser is installed,
-    UnsupportedBrowserError when the chosen browser ignores --load-extension,
-    and OSError when the browser cannot be started.
+    Raises ValueError when url is not an http(s) address, FileNotFoundError
+    when no supported browser is installed, UnsupportedBrowserError when the
+    chosen browser ignores --load-extension, and OSError when the browser
+    cannot be started.
     """
+    if url:
+        validate_url(url)
     browser = find_browser(preferred, profile_dir)
     if browser is None:
         installed = ", ".join(b.name for b in find_browsers(profile_dir)) or "none"

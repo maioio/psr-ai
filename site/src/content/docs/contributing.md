@@ -22,7 +22,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-The `dev` extra adds pytest, pytest-asyncio, pytest-cov and Pillow. It is what the CI workflow installs, on Python 3.11. Add other extras when you work on the commands that need them, for example `pip install -e ".[dev,capture]"` for the browser toolkit. [Commands](/psr-ai/commands/#optional-extras) lists every extra.
+The `dev` extra adds pytest, pytest-asyncio, pytest-cov, Pillow and aiohttp. It is what the CI workflow installs, on Python 3.11. Add other extras when you work on the commands that need them, for example `pip install -e ".[dev,capture]"` for the browser toolkit. [Commands](/psr-ai/commands/#optional-extras) lists every extra.
 
 ## Where things are
 

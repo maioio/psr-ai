@@ -61,7 +61,7 @@ The model provider receives what is on screen. Close anything private before you
 | `~/psr_output/` | Recordings, screenshots and logs. | Not encrypted. |
 | `claude_desktop_config.json.bak` | The previous Claude Desktop config, written by `sa mcp install`. | Contains whatever the original held. |
 
-API keys are read from environment variables: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GROQ_API_KEY` and `GITHUB_TOKEN`. `sa video-analyze` also reads `GROQ_API_KEY` and `OPENAI_API_KEY` from `~/.config/watch/.env` when they are not set.
+API keys are read from environment variables: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GROQ_API_KEY` and `GITHUB_TOKEN`. At startup `sa` also loads `~/.env` for any variable that is not already set. It never reads a `.env` in the current directory. `sa video-analyze` also reads `GROQ_API_KEY` and `OPENAI_API_KEY` from `~/.config/watch/.env` when they are not set.
 
 For `sa instagram`, prefer the `IG_USERNAME` and `IG_PASSWORD` environment variables to `--password`, which stays in your shell history.
 

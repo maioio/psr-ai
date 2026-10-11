@@ -112,7 +112,7 @@ pip install -e ".[gif,ai]"
 | `analyze` | faster-whisper, yt-dlp | `sa video-analyze` |
 | `analyze-legacy` | openai-whisper, yt-dlp | `sa video-analyze` with the older Whisper package |
 | `full` | anthropic, faster-whisper, yt-dlp, Pillow, playwright, pynput | Most features at once |
-| `dev` | pytest, pytest-asyncio, pytest-cov, Pillow | Running the test suite |
+| `dev` | pytest, pytest-asyncio, pytest-cov, Pillow, aiohttp | Running the test suite |
 | `cloud` | aiohttp | Library code only; no command uses it |
 
 After installing `capture`, download a browser once:

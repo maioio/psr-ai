@@ -22,7 +22,7 @@ The events end up in `data.json` as `browser_context` on each step. [Output form
 sa context install
 ```
 
-This creates the pairing token, then opens a browser with the extension already loaded, in a dedicated PSR.ai profile (`~/.psr_ai/browser_profile/<browser>`). Your everyday browser profile is not touched, and logins you make in the PSR.ai profile are kept between sessions. `sa context browser` opens the same browser again later, and takes `--browser edge|brave|chrome` and `--url`.
+This creates the pairing token, then opens a browser with the extension already loaded, in a dedicated PSR.ai profile (`~/.psr_ai/browser_profile/<browser>`). Your everyday browser profile is not touched, and logins you make in the PSR.ai profile are kept between sessions. `sa context browser` opens the same browser again later, and takes `--browser edge|brave|chrome` and `--url`. The URL must start with `http://` or `https://`; anything else is refused before the browser starts.
 
 ### Pair the extension
 

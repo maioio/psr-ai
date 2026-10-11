@@ -157,7 +157,7 @@ _TOOLS: list[dict[str, Any]] = [
                 },
                 "url": {
                     "type": "string",
-                    "description": "Optional URL to open immediately.",
+                    "description": "Optional http:// or https:// URL to open immediately.",
                 },
             },
             "required": [],
@@ -368,6 +368,8 @@ def _tool_psr_open_context_browser(args: dict[str, Any]) -> str:
             preferred=args.get("browser") or None,
             url=args.get("url") or None,
         )
+    except ValueError as exc:
+        return f"Could not open an instrumented browser: {exc}"
     except FileNotFoundError as exc:
         return (
             f"Could not open an instrumented browser: {exc}\n"

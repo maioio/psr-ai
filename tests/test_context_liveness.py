@@ -17,6 +17,7 @@ import pytest
 from click.testing import CliRunner
 
 from psr_ai.cli import main
+from psr_ai.core.context_browser import BrowserTarget
 from psr_ai.core import context_selftest as st
 from psr_ai.core import context_server as cs
 
@@ -202,9 +203,12 @@ class TestDoctor:
         health = {"recording": True, "session_id": "s", "extension_seen": True,
                   "extension_live": True, "extension_seen_seconds_ago": 3.0,
                   "client": {"browser": "Chrome", "version": "151"}}
+        # CI runners have no Chromium installed, and "no browser" is a problem.
+        edge = BrowserTarget("Edge", Path("msedge.exe"), Path("profile"))
         with (
             patch("psr_ai.core.context_server.read_state", return_value=state),
             patch("psr_ai.core.context_server.probe_listener", return_value=health),
+            patch("psr_ai.core.context_browser.find_browsers", return_value=[edge]),
         ):
             result = _invoke(["context", "doctor"])
         assert result.exit_code == 0

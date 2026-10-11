@@ -541,7 +541,7 @@ User invokes `sa agent "task"`
 | `[ai]` | `anthropic>=0.25`, `openai>=1.0` | `sa analyze` - vision LLM enrichment. Install this extra and export `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`. |
 | `[desktop]` | `pynput>=1.7` | Event-driven click tracking on macOS and Linux. Without this extra, recording falls back to 3-second interval capture. Not required on Windows (psr.exe handles capture natively). |
 | `[agent]` | `pyautogui>=0.9.54`, `Pillow>=10.0`, `anthropic>=0.25` | `sa agent` - includes all three dependencies required for the autonomous agent: pyautogui for mouse/keyboard execution, Pillow for screenshot resize optimization, and the Anthropic SDK for vision LLM calls. |
-| `[dev]` | `pytest>=8.0`, `pytest-cov>=5.0`, `Pillow>=10.0` | Development and CI only. Not included in any production install. |
+| `[dev]` | `pytest>=8.0`, `pytest-asyncio>=0.23`, `pytest-cov>=5.0`, `Pillow>=10.0`, `aiohttp>=3.9` | Development and CI only. Not included in any production install. |
 
 **Recommended install paths:**
 
