@@ -66,6 +66,8 @@ python scripts/public_surface/product_facts.py --check   # fails if the file or 
 
 `--check` also reads the docs. A sentence that states a different number of commands or MCP tools than the code makes it fail.
 
+The Pages workflow runs `--check` before it builds the site and `validate_site_build.py` after. If either fails, nothing is deployed. Commit a change to `cli.py`, `mcp.py` or `pyproject.toml` together with the regenerated facts file and any docs page it affects.
+
 ### Check the site before you open a pull request
 
 From the repository root:
