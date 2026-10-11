@@ -70,7 +70,7 @@ class TestInitialize:
 # ---------------------------------------------------------------------------
 
 class TestToolsList:
-    def test_returns_four_tools(self, monkeypatch):
+    def test_returns_the_full_tool_set(self, monkeypatch):
         resp = _call(_req("tools/list"), monkeypatch)
         tools = resp["result"]["tools"]
         names = {t["name"] for t in tools}
@@ -78,6 +78,9 @@ class TestToolsList:
             "psr_start_recording",
             "psr_stop_and_parse",
             "psr_quick_snapshot",
+            "psr_open_context_browser",
+            "psr_get_browser_context",
+            "psr_context_status",
             "psr_fetch_link",
         }
 

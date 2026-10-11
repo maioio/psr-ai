@@ -15,6 +15,7 @@ from psr_ai.core.recorder import (
     PSRNotFoundError,
     Recorder,
     WindowsRecorder,
+    WindowsPollingRecorder,
     MacRecorder,
     LinuxRecorder,
     _BUNDLED_LNK,
@@ -555,15 +556,15 @@ class TestLinuxRecorder:
 
 class TestCrossPlatformFactory:
 
-    def test_factory_win32_raises_psr_not_found_when_all_fail(self, tmp_path):
+    def test_factory_win32_falls_back_to_polling_when_psr_missing(self, tmp_path):
         with (
             patch("psr_ai.core.recorder.sys.platform", "win32"),
             patch("psr_ai.core.recorder.shutil.which", return_value=None),
             patch("psr_ai.core.recorder.resolve_env_path", side_effect=KeyError),
             patch("psr_ai.core.recorder._resolve_bundled_asset_dir", return_value=tmp_path),
         ):
-            with pytest.raises(PSRNotFoundError):
-                Recorder()
+            r = Recorder()
+        assert isinstance(r, WindowsPollingRecorder)
 
     def test_factory_darwin_never_raises_psr_not_found(self):
         with patch("psr_ai.core.recorder.sys.platform", "darwin"):
@@ -942,3 +943,443 @@ class TestLinuxWaylandDetection:
             name = r._active_window_name()
 
         assert name == ""
+
+
+# ---------------------------------------------------------------------------
+# Polling session: memory guard, visual diffing, cross-process stop
+# ---------------------------------------------------------------------------
+
+from psr_ai.core import recorder as _recorder_mod
+from psr_ai.core.recorder import (  # noqa: E402
+    _DEFAULT_MAX_SCREENSHOTS,
+    _PollingSession,
+    _STOP_SENTINEL,
+    run_polling_session,
+)
+
+PIL = pytest.importorskip("PIL", reason="visual diffing needs Pillow")
+
+
+def _solid(shade: int):
+    from PIL import Image
+    return Image.new("RGB", (160, 100), (shade, shade, shade))
+
+
+class TestPollingSessionMemoryGuard:
+
+    def test_default_cap_is_100(self):
+        assert _DEFAULT_MAX_SCREENSHOTS == 100
+
+    def test_session_stops_itself_at_the_cap(self, tmp_path):
+        staging, zip_path = tmp_path / "s.d", tmp_path / "s.zip"
+        shades = iter(range(5, 255, 20))
+
+        with (
+            patch.object(_recorder_mod, "_grab_screen_image", lambda: _solid(next(shades))),
+            patch.object(_recorder_mod.time, "sleep"),
+        ):
+            result = run_polling_session(staging, zip_path, max_screenshots=4, interval=0.01)
+
+        with zipfile.ZipFile(result) as zf:
+            data = json.loads(zf.read("data.json"))
+            frames = [n for n in zf.namelist() if n.endswith(".png")]
+        assert data["step_count"] == 4
+        assert len(frames) == 4
+
+    def test_cap_is_never_exceeded_by_extra_captures(self, tmp_path):
+        shades = iter(range(5, 255, 7))
+        session = _PollingSession(tmp_path / "s.d", tmp_path / "s.zip", max_screenshots=2)
+        (tmp_path / "s.d" / "screenshots").mkdir(parents=True)
+        with patch.object(_recorder_mod, "_grab_screen_image", lambda: _solid(next(shades))):
+            saved = [session.capture() for _ in range(6)]
+        assert saved.count(True) == 2
+        assert session.should_stop() is True
+
+    def test_staging_directory_is_removed_after_packing(self, tmp_path):
+        staging, zip_path = tmp_path / "s.d", tmp_path / "s.zip"
+        shades = iter(range(5, 255, 30))
+        with (
+            patch.object(_recorder_mod, "_grab_screen_image", lambda: _solid(next(shades))),
+            patch.object(_recorder_mod.time, "sleep"),
+        ):
+            run_polling_session(staging, zip_path, max_screenshots=2, interval=0.01)
+        assert not staging.exists()
+        assert zip_path.exists()
+
+
+class TestPollingSessionVisualDiffing:
+
+    def test_identical_frames_are_never_written(self, tmp_path):
+        staging = tmp_path / "s.d"
+        (staging / "screenshots").mkdir(parents=True)
+        session = _PollingSession(staging, tmp_path / "s.zip", max_screenshots=50)
+
+        with patch.object(_recorder_mod, "_grab_screen_image", lambda: _solid(40)):
+            first = session.capture()
+            repeats = [session.capture() for _ in range(5)]
+
+        assert first is True
+        assert repeats == [False] * 5
+        assert len(list((staging / "screenshots").glob("*.png"))) == 1
+
+    def test_a_changed_screen_produces_a_new_frame(self, tmp_path):
+        staging = tmp_path / "s.d"
+        (staging / "screenshots").mkdir(parents=True)
+        session = _PollingSession(staging, tmp_path / "s.zip", max_screenshots=50)
+
+        shades = iter([30, 30, 30, 220])
+        with patch.object(_recorder_mod, "_grab_screen_image", lambda: _solid(next(shades))):
+            saved = [session.capture() for _ in range(4)]
+
+        assert saved == [True, False, False, True]
+        assert len(list((staging / "screenshots").glob("*.png"))) == 2
+
+    def test_step_indices_stay_contiguous_after_discards(self, tmp_path):
+        staging = tmp_path / "s.d"
+        (staging / "screenshots").mkdir(parents=True)
+        session = _PollingSession(staging, tmp_path / "s.zip", max_screenshots=50)
+
+        shades = iter([10, 10, 120, 120, 240])
+        with patch.object(_recorder_mod, "_grab_screen_image", lambda: _solid(next(shades))):
+            for _ in range(5):
+                session.capture()
+        zip_path = session.finalize()
+
+        with zipfile.ZipFile(zip_path) as zf:
+            data = json.loads(zf.read("data.json"))
+            names = sorted(n for n in zf.namelist() if n.endswith(".png"))
+        assert [s["index"] for s in data["steps"]] == [0, 1, 2]
+        assert names == [
+            "screenshots/step_000.png",
+            "screenshots/step_001.png",
+            "screenshots/step_002.png",
+        ]
+
+    def test_max_dim_downscales_saved_frames(self, tmp_path):
+        from PIL import Image
+        staging = tmp_path / "s.d"
+        (staging / "screenshots").mkdir(parents=True)
+        session = _PollingSession(staging, tmp_path / "s.zip", max_screenshots=5, max_dim=64)
+        with patch.object(_recorder_mod, "_grab_screen_image", lambda: _solid(80)):
+            session.capture()
+        png = next((staging / "screenshots").glob("*.png"))
+        with Image.open(png) as img:
+            assert max(img.width, img.height) == 64
+
+
+class TestPollingSessionStopSentinel:
+
+    def test_sentinel_ends_the_loop(self, tmp_path):
+        staging, zip_path = tmp_path / "s.d", tmp_path / "s.zip"
+        (staging / "screenshots").mkdir(parents=True)
+        (staging / _STOP_SENTINEL).write_text("stop", encoding="utf-8")
+
+        with patch.object(_recorder_mod, "_grab_screen_image", lambda: _solid(10)):
+            result = run_polling_session(staging, zip_path, max_screenshots=100, interval=0.01)
+
+        with zipfile.ZipFile(result) as zf:
+            data = json.loads(zf.read("data.json"))
+        assert data["step_count"] == 0
+        assert result.exists()
+
+    def test_sentinel_is_not_packed_into_the_zip(self, tmp_path):
+        staging, zip_path = tmp_path / "s.d", tmp_path / "s.zip"
+        (staging / "screenshots").mkdir(parents=True)
+        (staging / _STOP_SENTINEL).write_text("stop", encoding="utf-8")
+        with patch.object(_recorder_mod, "_grab_screen_image", lambda: _solid(10)):
+            result = run_polling_session(staging, zip_path, max_screenshots=5, interval=0.01)
+        with zipfile.ZipFile(result) as zf:
+            assert _STOP_SENTINEL not in zf.namelist()
+
+    def test_capture_survives_a_missing_staging_directory(self, tmp_path):
+        session = _PollingSession(tmp_path / "gone.d", tmp_path / "gone.zip", max_screenshots=3)
+        with patch.object(_recorder_mod, "_grab_screen_image", lambda: _solid(60)):
+            assert session.capture() is True
+
+
+# ---------------------------------------------------------------------------
+# WindowsPollingRecorder: detached daemon lifecycle
+# ---------------------------------------------------------------------------
+
+class TestWindowsPollingRecorderLifecycle:
+
+    @pytest.fixture(autouse=True)
+    def _isolated_state(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            WindowsPollingRecorder, "_STATE_FILE", tmp_path / "state.json", raising=False
+        )
+        yield
+
+    def test_start_spawns_a_daemon_and_returns_a_zip_path(self, tmp_path):
+        rec = WindowsPollingRecorder()
+        with patch.object(WindowsPollingRecorder, "_spawn_daemon", return_value=4242):
+            out = rec.start_recording(output_path=tmp_path / "sess.zip", max_screenshots=7)
+        assert out == (tmp_path / "sess.zip").resolve()
+        assert (tmp_path / "sess.d" / "screenshots").is_dir()
+
+    def test_start_records_session_state_for_other_processes(self, tmp_path):
+        rec = WindowsPollingRecorder()
+        with patch.object(WindowsPollingRecorder, "_spawn_daemon", return_value=4242):
+            rec.start_recording(output_path=tmp_path / "sess.zip", max_screenshots=7)
+        state = WindowsPollingRecorder._load_state()
+        assert state["pid"] == 4242
+        assert state["max_screenshots"] == 7
+        assert Path(state["zip"]).name == "sess.zip"
+
+    def test_start_clears_a_stale_sentinel(self, tmp_path):
+        staging = tmp_path / "sess.d"
+        (staging / "screenshots").mkdir(parents=True)
+        (staging / _STOP_SENTINEL).write_text("stop", encoding="utf-8")
+        rec = WindowsPollingRecorder()
+        with patch.object(WindowsPollingRecorder, "_spawn_daemon", return_value=1):
+            rec.start_recording(output_path=tmp_path / "sess.zip")
+        assert not (staging / _STOP_SENTINEL).exists()
+
+    def test_stop_writes_the_sentinel_for_the_daemon(self, tmp_path):
+        rec = WindowsPollingRecorder()
+        with patch.object(WindowsPollingRecorder, "_spawn_daemon", return_value=4242):
+            rec.start_recording(output_path=tmp_path / "sess.zip")
+        staging = tmp_path / "sess.d"
+
+        # A dead daemon leaves the salvage path to pack whatever exists.
+        with patch.object(WindowsPollingRecorder, "_pid_alive", staticmethod(lambda pid: False)):
+            result = rec.stop_recording()
+
+        assert result == tmp_path / "sess.zip"
+        assert result.exists()
+        assert zipfile.is_zipfile(result)
+        assert not staging.exists()
+
+    def test_stop_salvages_frames_from_a_dead_daemon(self, tmp_path):
+        rec = WindowsPollingRecorder()
+        with patch.object(WindowsPollingRecorder, "_spawn_daemon", return_value=4242):
+            rec.start_recording(output_path=tmp_path / "sess.zip")
+        shots = tmp_path / "sess.d" / "screenshots"
+        (shots / "step_000.png").write_bytes(b"\x89PNG")
+        (shots / "step_001.png").write_bytes(b"\x89PNG")
+
+        with patch.object(WindowsPollingRecorder, "_pid_alive", staticmethod(lambda pid: False)):
+            result = rec.stop_recording()
+
+        with zipfile.ZipFile(result) as zf:
+            data = json.loads(zf.read("data.json"))
+        assert data["step_count"] == 2
+
+    def test_stop_clears_state_so_status_reads_idle(self, tmp_path):
+        rec = WindowsPollingRecorder()
+        with patch.object(WindowsPollingRecorder, "_spawn_daemon", return_value=4242):
+            rec.start_recording(output_path=tmp_path / "sess.zip")
+        with patch.object(WindowsPollingRecorder, "_pid_alive", staticmethod(lambda pid: False)):
+            rec.stop_recording()
+        assert WindowsPollingRecorder._load_state() is None
+        assert WindowsPollingRecorder.has_active_session() is False
+
+    def test_stop_without_a_session_returns_none(self):
+        assert WindowsPollingRecorder().stop_recording() is None
+
+    def test_has_active_session_true_while_the_daemon_lives(self, tmp_path):
+        rec = WindowsPollingRecorder()
+        with patch.object(WindowsPollingRecorder, "_spawn_daemon", return_value=4242):
+            rec.start_recording(output_path=tmp_path / "sess.zip")
+        with patch.object(WindowsPollingRecorder, "_pid_alive", staticmethod(lambda pid: True)):
+            assert WindowsPollingRecorder.has_active_session() is True
+
+    def test_pid_alive_false_for_a_bogus_pid(self):
+        assert WindowsPollingRecorder._pid_alive(None) is False
+        assert WindowsPollingRecorder._pid_alive(0) is False
+
+
+# ---------------------------------------------------------------------------
+# Windows: silent fallback when psr.exe is blocked
+# ---------------------------------------------------------------------------
+
+class TestWindowsBlockedPsrFallback:
+
+    def _recorder(self, tmp_path) -> WindowsRecorder:
+        rec = _make_windows_recorder(tmp_path / "psr.exe")
+        rec._fallback = None
+        return rec
+
+    def test_permission_error_falls_back_to_polling(self, tmp_path):
+        rec = self._recorder(tmp_path)
+        with (
+            patch("psr_ai.core.recorder.subprocess.Popen",
+                  side_effect=PermissionError(5, "Access is denied")),
+            patch.object(WindowsPollingRecorder, "_spawn_daemon", return_value=99),
+            patch.object(WindowsPollingRecorder, "_STATE_FILE", tmp_path / "state.json"),
+        ):
+            out = rec.start_recording(output_path=tmp_path / "sess.zip", max_screenshots=5)
+        assert isinstance(rec._fallback, WindowsPollingRecorder)
+        assert out == (tmp_path / "sess.zip").resolve()
+
+    def test_group_policy_block_falls_back_to_polling(self, tmp_path):
+        rec = self._recorder(tmp_path)
+        blocked = OSError("This program is blocked by group policy")
+        blocked.winerror = 1260
+        with (
+            patch("psr_ai.core.recorder.subprocess.Popen", side_effect=blocked),
+            patch.object(WindowsPollingRecorder, "_spawn_daemon", return_value=99),
+            patch.object(WindowsPollingRecorder, "_STATE_FILE", tmp_path / "state.json"),
+        ):
+            out = rec.start_recording(output_path=tmp_path / "sess.zip")
+        assert isinstance(rec._fallback, WindowsPollingRecorder)
+        assert out.suffix == ".zip"
+
+    def test_fallback_receives_the_caller_settings(self, tmp_path):
+        rec = self._recorder(tmp_path)
+        seen = {}
+
+        def fake_spawn(self, staging, zip_path, maxsc, max_dim):
+            seen.update(staging=staging, zip=zip_path, maxsc=maxsc, max_dim=max_dim)
+            return 7
+
+        with (
+            patch("psr_ai.core.recorder.subprocess.Popen", side_effect=PermissionError),
+            patch.object(WindowsPollingRecorder, "_spawn_daemon", fake_spawn),
+            patch.object(WindowsPollingRecorder, "_STATE_FILE", tmp_path / "state.json"),
+        ):
+            rec.start_recording(output_path=tmp_path / "sess.zip", max_screenshots=13, max_dim=512)
+        assert seen["maxsc"] == 13
+        assert seen["max_dim"] == 512
+        assert seen["staging"] == (tmp_path / "sess.d").resolve()
+
+    def test_stop_is_delegated_to_the_fallback(self, tmp_path):
+        rec = self._recorder(tmp_path)
+        fallback = MagicMock()
+        fallback.stop_recording.return_value = tmp_path / "sess.zip"
+        rec._fallback = fallback
+        assert rec.stop_recording() == tmp_path / "sess.zip"
+        fallback.stop_recording.assert_called_once()
+
+    def test_is_recording_active_is_delegated_to_the_fallback(self, tmp_path):
+        rec = self._recorder(tmp_path)
+        fallback = MagicMock()
+        fallback.is_recording_active.return_value = True
+        rec._fallback = fallback
+        assert rec.is_recording_active() is True
+
+    def test_factory_prefers_a_live_polling_session(self, tmp_path):
+        with (
+            patch("psr_ai.core.recorder.sys.platform", "win32"),
+            patch.object(WindowsPollingRecorder, "has_active_session", return_value=True),
+            patch("psr_ai.core.recorder.shutil.which", return_value=str(tmp_path / "psr.exe")),
+        ):
+            assert isinstance(Recorder(), WindowsPollingRecorder)
+
+    def test_factory_falls_back_when_construction_raises_permission_error(self, tmp_path):
+        with (
+            patch("psr_ai.core.recorder.sys.platform", "win32"),
+            patch.object(WindowsPollingRecorder, "has_active_session", return_value=False),
+            patch("psr_ai.core.recorder.shutil.which", side_effect=PermissionError),
+        ):
+            assert isinstance(Recorder(), WindowsPollingRecorder)
+
+
+# ---------------------------------------------------------------------------
+# Memory guard on the macOS / Linux engines
+# ---------------------------------------------------------------------------
+
+class TestClickEngineMemoryGuard:
+
+    def _prepare(self, rec, tmp_path, max_screenshots: int):
+        rec._output_dir = tmp_path
+        (tmp_path / "screenshots").mkdir(parents=True, exist_ok=True)
+        rec._step_index = 0
+        rec._steps = []
+        rec._active = True
+        rec._max = max_screenshots
+        rec._finalized_zip = None
+        return rec
+
+    def test_mac_session_finalizes_itself_at_the_cap(self, tmp_path):
+        rec = self._prepare(MacRecorder(), tmp_path / "sess.d", 2)
+        with patch("psr_ai.core.recorder.subprocess.run", return_value=MagicMock(stdout="Finder")):
+            rec._on_click(1, 1, None, True)
+            rec._on_click(2, 2, None, True)
+        assert rec._finalized_zip is not None
+        assert rec._finalized_zip.exists()
+        assert rec._active is False
+
+    def test_mac_stop_returns_the_auto_packed_zip_without_repacking(self, tmp_path):
+        rec = self._prepare(MacRecorder(), tmp_path / "sess.d", 1)
+        with patch("psr_ai.core.recorder.subprocess.run", return_value=MagicMock(stdout="Finder")):
+            rec._on_click(1, 1, None, True)
+        auto = rec._finalized_zip
+        assert rec.stop_recording() == auto
+
+    def test_linux_session_finalizes_itself_at_the_cap(self, tmp_path):
+        with patch("psr_ai.core.recorder.shutil.which", return_value=None):
+            rec = LinuxRecorder()
+        self._prepare(rec, tmp_path / "sess.d", 1)
+        with patch("psr_ai.core.recorder.subprocess.run", return_value=MagicMock(stdout="Finder")):
+            rec._on_click(3, 4, None, True)
+        assert rec._finalized_zip is not None
+        assert rec._finalized_zip.exists()
+        assert rec._active is False
+
+    def test_clicks_after_the_cap_do_not_add_steps(self, tmp_path):
+        rec = self._prepare(MacRecorder(), tmp_path / "sess.d", 1)
+        with patch("psr_ai.core.recorder.subprocess.run", return_value=MagicMock(stdout="Finder")):
+            rec._on_click(1, 1, None, True)
+            rec._on_click(2, 2, None, True)
+        assert len(rec._steps) == 1
+
+    def test_default_max_screenshots_is_100_on_every_engine(self, tmp_path):
+        import inspect
+        with patch("psr_ai.core.recorder.shutil.which", return_value=None):
+            engines = [MacRecorder(), LinuxRecorder(), WindowsPollingRecorder()]
+        for engine in engines:
+            signature = inspect.signature(engine.start_recording)
+            assert signature.parameters["max_screenshots"].default == 100
+
+
+class TestPackToZipAtomicity:
+
+    def test_zip_is_published_atomically(self, tmp_path):
+        asset_dir = tmp_path / "s.d"
+        (asset_dir / "screenshots").mkdir(parents=True)
+        (asset_dir / "data.json").write_text("{}", encoding="utf-8")
+        zip_path = tmp_path / "s.zip"
+        _pack_to_zip(asset_dir, zip_path)
+        assert zipfile.is_zipfile(zip_path)
+        assert not (tmp_path / "s.zip.part").exists()
+
+    def test_existing_zip_is_replaced_not_corrupted(self, tmp_path):
+        asset_dir = tmp_path / "s.d"
+        (asset_dir / "screenshots").mkdir(parents=True)
+        (asset_dir / "data.json").write_text('{"step_count": 1}', encoding="utf-8")
+        zip_path = tmp_path / "s.zip"
+        zip_path.write_bytes(b"stale contents")
+        _pack_to_zip(asset_dir, zip_path)
+        with zipfile.ZipFile(zip_path) as zf:
+            assert json.loads(zf.read("data.json"))["step_count"] == 1
+
+
+class TestConcurrentStartGuard:
+
+    def test_start_stops_an_orphaned_session_first(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            WindowsPollingRecorder, "_STATE_FILE", tmp_path / "state.json", raising=False
+        )
+        first = WindowsPollingRecorder()
+        with patch.object(WindowsPollingRecorder, "_spawn_daemon", return_value=4242):
+            first.start_recording(output_path=tmp_path / "one.zip")
+
+        stopped = []
+        original_stop = WindowsPollingRecorder.stop_recording
+
+        def tracking_stop(self):
+            stopped.append(self._state or self._load_state())
+            return original_stop(self)
+
+        with (
+            patch.object(WindowsPollingRecorder, "has_active_session", return_value=True),
+            patch.object(WindowsPollingRecorder, "stop_recording", tracking_stop),
+            patch.object(WindowsPollingRecorder, "_pid_alive", staticmethod(lambda pid: False)),
+            patch.object(WindowsPollingRecorder, "_spawn_daemon", return_value=7),
+        ):
+            WindowsPollingRecorder().start_recording(output_path=tmp_path / "two.zip")
+
+        assert len(stopped) == 1
+        assert Path(stopped[0]["zip"]).name == "one.zip"
+        assert WindowsPollingRecorder._load_state()["pid"] == 7

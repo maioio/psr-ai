@@ -2,9 +2,35 @@
 
 from __future__ import annotations
 
+import json
+import os
+import sys
+import warnings
 from pathlib import Path
 
 import click
+
+
+def _load_dotenv() -> None:
+    """Load ~/.env and ./.env into os.environ (no dependencies required)."""
+    for env_path in (Path.home() / ".env", Path(".env")):
+        if not env_path.exists():
+            continue
+        try:
+            for line in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                key = key.strip()
+                val = val.strip().strip("\"'")
+                if key and val and key not in os.environ:
+                    os.environ[key] = val
+        except OSError:
+            pass
+
+
+_load_dotenv()
 
 from psr_ai import __version__
 from psr_ai.core.recorder import PSRNotFoundError, Recorder
@@ -18,6 +44,23 @@ from psr_ai.utils.paths import default_output_dir
 # for users who never use the command.
 
 
+def _ensure_utf8_stdout() -> None:
+    """Switch stdout/stderr to UTF-8 when the console can be reconfigured.
+
+    Windows consoles default to a legacy code page (cp1252 here), which turns
+    every non-ASCII character in a path into '?'. That is merely ugly for a log
+    line, but fatal for output the user must copy verbatim - the extension
+    directory printed by `sa context install`, for instance. Reconfiguring is
+    the fix; the ASCII fallback in _echo stays as the last resort.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if getattr(stream, "encoding", "").lower().replace("-", "") != "utf8":
+                stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError, ValueError):
+            pass   # Not a real console (pytest capture, pipes) - nothing to do.
+
+
 def _echo(msg: str) -> None:
     """click.echo with a safe fallback for terminals that cannot encode Unicode paths."""
     try:
@@ -26,10 +69,80 @@ def _echo(msg: str) -> None:
         click.echo(msg.encode("ascii", errors="replace").decode("ascii"))
 
 
+# ------------------------------------------------------------------
+# Output discipline
+# ------------------------------------------------------------------
+#
+# Quiet is the default and it is global: the setting comes from the flag or
+# the PSR_AI_QUIET / PSR_AI_VERBOSE environment variables, never from a file
+# in the current directory, so `sa` behaves identically in every directory and
+# never has to be re-configured per project. In quiet mode the commands print
+# only their final result - progress chatter, step-by-step narration, and
+# third-party warnings are suppressed. `sa --verbose <cmd>` restores the full
+# narration for debugging.
+
+def _env_flag(name: str) -> bool | None:
+    """Read a tri-state boolean env var: True, False, or None when unset."""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return None
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _initial_verbosity() -> bool:
+    explicit = _env_flag("PSR_AI_VERBOSE")
+    if explicit is not None:
+        return explicit
+    quiet = _env_flag("PSR_AI_QUIET")
+    if quiet is not None:
+        return not quiet
+    return False
+
+
+_VERBOSE = _initial_verbosity()
+
+
+def _set_verbosity(verbose: bool) -> None:
+    """Apply the verbosity setting to this process and everything it spawns."""
+    global _VERBOSE
+    _VERBOSE = verbose
+    os.environ["PSR_AI_VERBOSE"] = "1" if verbose else "0"
+    os.environ["PSR_AI_QUIET"] = "0" if verbose else "1"
+    if not verbose:
+        # Library deprecation notices are background noise, not results.
+        warnings.filterwarnings("ignore")
+        os.environ.setdefault("PYTHONWARNINGS", "ignore")
+
+
+def _detail(msg: str) -> None:
+    """Print progress detail - suppressed unless --verbose is active."""
+    if _VERBOSE:
+        _echo(msg)
+
+
+def _warn(msg: str) -> None:
+    """Print a warning on stderr so stdout stays a clean result stream."""
+    try:
+        click.echo(msg, err=True)
+    except UnicodeEncodeError:
+        click.echo(msg.encode("ascii", errors="replace").decode("ascii"), err=True)
+
+
 @click.group()
+@click.option(
+    "--verbose/--quiet",
+    "verbose",
+    default=None,
+    help="Show full progress narration. Quiet (results only) is the default everywhere.",
+)
 @click.version_option(__version__, prog_name="sa")
-def main() -> None:
+def main(verbose: bool | None) -> None:
     """PSR.ai - turn Windows Steps Recorder output into AI-ready documentation."""
+    _ensure_utf8_stdout()
+    # Without an explicit flag the environment decides, re-read on every
+    # invocation so PSR_AI_QUIET / PSR_AI_VERBOSE work regardless of when this
+    # module happened to be imported.
+    _set_verbosity(_initial_verbosity() if verbose is None else verbose)
 
 
 # ------------------------------------------------------------------
@@ -49,23 +162,67 @@ def main() -> None:
     show_default=True,
     help="Maximum number of screenshots PSR will capture.",
 )
-def start(output: str | None, maxsc: int) -> None:
+@click.option(
+    "--low-token",
+    is_flag=True,
+    default=False,
+    help="Downscale screenshots to 512px (max dimension) to cut LLM vision token costs.",
+)
+@click.option(
+    "--context/--no-context",
+    "use_context",
+    default=True,
+    show_default=True,
+    help=(
+        "Run the Hidden Context Layer listener so the browser extension can "
+        "attach failed requests, console errors, and clicked-element data."
+    ),
+)
+def start(output: str | None, maxsc: int, low_token: bool, use_context: bool) -> None:
     """Start a new PSR recording session.
 
-    PSR runs in the background - your terminal is free immediately.
+    Recording runs in the background - your terminal is free immediately.
     Run `sa stop` when you are done to save the recording.
+
+    Quiet by default: the only thing printed is the path the session will be
+    written to. Use `sa --verbose start` for the full breakdown.
+
+    The engine is chosen silently: psr.exe when Windows allows it, otherwise a
+    detached local polling daemon using native OS screen capture.
     """
     try:
         recorder = Recorder()
     except PSRNotFoundError as exc:
-        click.echo(f"Error: {exc}", err=True)
+        _warn(f"Error: {exc}")
         raise SystemExit(1)
 
-    out_path = recorder.start_recording(output_path=output, max_screenshots=maxsc)
-    click.echo("Recording started.")
-    _echo(f"  Output: {out_path}")
-    click.echo(f"  Max screenshots: {maxsc}")
-    click.echo("Run `sa stop` when finished.")
+    max_dim = 512 if low_token else None
+    try:
+        out_path = recorder.start_recording(
+            output_path=output, max_screenshots=maxsc, max_dim=max_dim
+        )
+    except OSError as exc:
+        _warn(f"Error: could not start a recording ({exc}).")
+        raise SystemExit(1)
+
+    _detail("Recording started.")
+    _detail(f"  Engine: {type(recorder).__name__}")
+    _detail(f"  Max screenshots: {maxsc}")
+    if low_token:
+        _detail("  Low-token mode: screenshots capped at 512px")
+
+    if use_context:
+        listener_port = _start_context_listener(out_path)
+        if listener_port:
+            _detail(f"  Context layer: listening on 127.0.0.1:{listener_port}")
+            _report_context_layer(listener_port)
+        else:
+            _detail("  Context layer: unavailable (recording continues without it)")
+
+    _detail("  Run `sa stop` when finished.")
+
+    # The one essential result: where this session lands.
+    _echo(str(out_path))
 
 
 # ------------------------------------------------------------------
@@ -80,52 +237,266 @@ def start(output: str | None, maxsc: int) -> None:
     default=False,
     help="Skip GIF generation and produce only data.json and report.md.",
 )
-def stop(skip_gif: bool) -> None:
-    """Stop the active PSR recording session and save the ZIP.
+@click.option(
+    "--clipboard",
+    "include_clipboard",
+    is_flag=True,
+    default=False,
+    help=(
+        "Also capture the current clipboard text into data.json. Off by default: "
+        "clipboards routinely hold credentials. Captured text is redacted and truncated."
+    ),
+)
+def stop(skip_gif: bool, include_clipboard: bool) -> None:
+    """Stop the active recording session and save the ZIP.
 
-    Waits for PSR to finish writing the file before returning.
+    Waits for the engine to finish writing the file before returning.
     After saving, automatically parses the ZIP, renders report.md,
     and builds action_replay.gif (pass --no-gif to skip the GIF).
+
+    Quiet by default: one line with the step count and the report path.
+    Use `sa --verbose stop` to see every intermediate artifact.
     """
     try:
         recorder = Recorder()
     except PSRNotFoundError as exc:
-        click.echo(f"Error: {exc}", err=True)
+        _warn(f"Error: {exc}")
         raise SystemExit(1)
 
-    zip_path = recorder.stop_recording()
+    # Signal the context listener first so it stops accepting events and exits
+    # while the ZIP is still being parsed.
+    _stop_context_listener()
 
-    if zip_path is not None and zip_path.exists():
-        size_kb = zip_path.stat().st_size // 1024
-        click.echo("Recording stopped.")
-        _echo(f"  File: {zip_path}")
-        click.echo(f"  Size: {size_kb} KB")
+    try:
+        zip_path = recorder.stop_recording()
+    except OSError as exc:
+        _warn(f"Error: could not stop the recording ({exc}).")
+        raise SystemExit(1)
 
-        # Auto-parse: extract steps, dump data.json, render report.md, build GIF.
-        try:
-            session = parse_session(zip_path)
-            output_dir = default_output_dir(zip_path)
-            json_path = generate_json_meta(session, output_dir / "data.json")
-            report_path = MarkdownGenerator(json_path).write(output_dir)
-            screenshots_dir = output_dir / "screenshots"
+    if zip_path is None or not zip_path.exists():
+        _warn("No recording output found - the session may have exited before saving.")
+        raise SystemExit(1)
 
-            click.echo(f"  Parsed:      {len(session.steps)} steps extracted")
-            _echo(f"  Data:        {json_path}")
-            _echo(f"  Screenshots: {screenshots_dir}")
-            _echo(f"  Report:      {report_path}")
+    size_kb = zip_path.stat().st_size // 1024
+    _detail("Recording stopped.")
+    _detail(f"  File: {zip_path}")
+    _detail(f"  Size: {size_kb} KB")
 
-            if not skip_gif:
-                _build_gif_for_stop(session, output_dir, json_path)
+    # Auto-parse: extract steps, dump data.json, render report.md, build GIF.
+    try:
+        session = parse_session(zip_path)
+        output_dir = default_output_dir(zip_path)
+        json_path = generate_json_meta(session, output_dir / "data.json")
 
-        except Exception as exc:
-            click.echo(
-                f"  Warning: auto-parse failed ({exc}). The ZIP was saved successfully.",
-                err=True,
-            )
-            _echo(f"  Run `sa pub {zip_path}` to generate documentation manually.")
+        # Enrich data.json before the report is rendered, so report.md and any
+        # downstream consumer see the same enriched document.
+        _enrich_with_context(json_path, output_dir, include_clipboard)
+
+        report_path = MarkdownGenerator(json_path).write(output_dir)
+
+        _detail(f"  Parsed:      {len(session.steps)} steps extracted")
+        _detail(f"  Data:        {json_path}")
+        _detail(f"  Screenshots: {output_dir / 'screenshots'}")
+        _detail(f"  Report:      {report_path}")
+
+        if not skip_gif:
+            _build_gif_for_stop(session, output_dir, json_path)
+
+        _enrich_with_html(session, json_path)
+        _suggest_video_analysis()
+
+        # The one essential result: how much was captured, and where to read it.
+        _echo(f"{len(session.steps)} steps -> {report_path}")
+
+    except Exception as exc:
+        _warn(f"Warning: auto-parse failed ({exc}). The ZIP was saved successfully.")
+        _warn(f"Run `sa pub {zip_path}` to generate documentation manually.")
+        _echo(str(zip_path))
+
+
+# ------------------------------------------------------------------
+# Hidden Context Layer helpers
+# ------------------------------------------------------------------
+
+def _start_context_listener(zip_path: Path) -> int | None:
+    """Spawn the detached context listener for this session. Returns its port.
+
+    Returns None when the listener cannot be started - a missing context layer
+    must never prevent a recording.
+    """
+    import subprocess
+    from psr_ai.core import context_server
+
+    session_dir = default_output_dir(Path(zip_path))
+    try:
+        session_dir.mkdir(parents=True, exist_ok=True)
+        token = context_server.ensure_token()
+    except OSError:
+        return None
+
+    # A listener left over from a crashed session would hold the port.
+    context_server.request_stop()
+
+    cmd = [
+        sys.executable, "-m", "psr_ai", "context", "serve",
+        "--session-dir", str(session_dir),
+        "--session-id", Path(zip_path).stem,
+        "--port", str(context_server.DEFAULT_PORT),
+    ]
+    creationflags = 0
+    if sys.platform == "win32":
+        creationflags = (
+            getattr(subprocess, "DETACHED_PROCESS", 0)
+            | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        )
+    try:
+        subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=creationflags,
+            close_fds=True,
+            cwd=str(session_dir),
+        )
+    except OSError:
+        return None
+
+    del token   # Only ensured so the extension has something to pair against.
+    return context_server.DEFAULT_PORT
+
+
+def _report_context_layer(port: int) -> None:
+    """Tell the user, in one line, whether the browser layer is actually live.
+
+    The listener has only just started, so the extension may not have checked
+    in yet - a brief wait avoids reporting a false negative on every run.
+    """
+    import time
+    from psr_ai.core import context_server
+
+    token = context_server.read_token()
+    deadline = time.monotonic() + 2.0
+    health = None
+    while time.monotonic() < deadline:
+        health = context_server.probe_listener(port=port, token=token)
+        if health and health.get("extension_seen"):
+            break
+        time.sleep(0.25)
+
+    if health and health.get("extension_seen"):
+        client = health.get("client") or {}
+        who = client.get("browser") or "browser"
+        _detail(f"  Context layer: live ({who})")
     else:
-        click.echo("Recording stopped.")
-        click.echo("  Note: output file not found - PSR may have exited before saving.")
+        # Not an error: the browser may simply not be open yet.
+        _detail("  Context layer: waiting for the browser extension")
+        _detail("                 check with: sa context doctor")
+
+
+def _stop_context_listener() -> None:
+    """Ask a running context listener to shut down. Never raises."""
+    try:
+        from psr_ai.core import context_server
+        context_server.request_stop()
+    except Exception:
+        pass
+
+
+def _warn_if_layer_never_seen(output_dir: Path, merged: int) -> None:
+    """Warn when a session captured no browser context and none was possible.
+
+    Silence used to be ambiguous: a clean run and a switched-off extension
+    produced identical output. The liveness record tells them apart, so the
+    user is only nagged when something really was wrong.
+    """
+    if merged:
+        return
+    try:
+        from psr_ai.core import context_server
+        meta = context_server.read_context_meta(output_dir)
+    except Exception:
+        return
+
+    if meta and meta.get("last_seen"):
+        return   # The layer was live; the page genuinely had nothing to report.
+
+    _warn("Note: no browser context was captured - the extension never checked in.")
+    _warn("      Run `sa context doctor` to see why (it is usually disabled in chrome://extensions).")
+
+
+def _enrich_with_context(json_path: Path, output_dir: Path, include_clipboard: bool) -> None:
+    """Merge browser context and OS metadata into data.json."""
+    try:
+        from psr_ai.core import context_server, os_context
+    except ImportError:
+        return
+
+    try:
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+
+    merged = 0
+    try:
+        merged = context_server.merge_context_into_data(data, output_dir)
+    except Exception:
+        pass   # Context is a bonus; never let it break `sa stop`.
+
+    try:
+        os_context.enrich_data_json(data, include_clipboard=include_clipboard)
+    except Exception:
+        pass
+
+    try:
+        json_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError:
+        return
+
+    if merged:
+        summary = data.get("browser_context", {})
+        kinds = summary.get("by_kind", {})
+        _detail(
+            f"  Browser ctx: {summary.get('events_total', 0)} events "
+            f"({', '.join(f'{k}={v}' for k, v in sorted(kinds.items()))})"
+        )
+    else:
+        _warn_if_layer_never_seen(output_dir, merged)
+    active_window = data.get("os_context", {}).get("active_window")
+    if active_window:
+        _detail(f"  Active window: {active_window[:70]}")
+    if include_clipboard:
+        _detail("  Clipboard:   captured (redacted)")
+
+
+def _enrich_with_html(session, json_path: Path) -> None:
+    """Extract element HTML from browser steps and write back to data.json."""
+    try:
+        from psr_ai.core.html_extractor import enrich_steps_with_html
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+        enriched = enrich_steps_with_html(data.get("steps", []), echo=_detail)
+        if enriched:
+            json_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            _detail(f"  HTML context: {enriched} element(s) extracted from browser")
+    except Exception:
+        pass  # HTML extraction is best-effort — never block sa stop
+
+
+def _suggest_video_analysis() -> None:
+    """After sa stop: detect open video windows and print a one-line hint."""
+    try:
+        from psr_ai.core.window_detect import detect_video_windows
+        videos = detect_video_windows()
+        if not videos:
+            return
+        v = videos[0]
+        _detail(f"  Video detected: \"{v.title[:70]}\"")
+        _detail(f"  → sa video-analyze \"{v.suggest_url}\"")
+        if len(videos) > 1:
+            _detail(f"  ({len(videos) - 1} more video window(s) detected)")
+    except Exception:
+        pass
 
 
 def _build_gif_for_stop(session, output_dir: Path, json_path: Path) -> None:
@@ -136,15 +507,420 @@ def _build_gif_for_stop(session, output_dir: Path, json_path: Path) -> None:
             screenshots_dir=output_dir / "screenshots",
         )
         gif_path = gif_gen.write(output_dir)
-        _echo(f"  GIF:         {gif_path}")
+        _detail(f"  GIF:         {gif_path}")
     except ImportError:
-        click.echo(
-            "  GIF skipped: Pillow not installed. Run: pip install psr-ai[gif]",
-            err=True,
-        )
+        _detail("  GIF skipped: Pillow not installed. Run: pip install psr-ai[gif]")
     except ValueError as exc:
         # No frames found - session had no screenshots. Non-fatal.
-        click.echo(f"  GIF skipped: {exc}", err=True)
+        _detail(f"  GIF skipped: {exc}")
+
+
+# ------------------------------------------------------------------
+# sa record-daemon  (internal - spawned detached by sa start)
+# ------------------------------------------------------------------
+
+@main.command("record-daemon", hidden=True)
+@click.option("--staging", required=True, type=click.Path(), help="Staging directory.")
+@click.option("--zip", "zip_path", required=True, type=click.Path(), help="Output ZIP path.")
+@click.option("--maxsc", default=100, show_default=True, help="Hard frame cap.")
+@click.option("--interval", default=3.0, show_default=True, help="Seconds between frames.")
+@click.option("--max-dim", default=None, type=int, help="Downscale frames to this longest edge.")
+def record_daemon(
+    staging: str,
+    zip_path: str,
+    maxsc: int,
+    interval: float,
+    max_dim: int | None,
+) -> None:
+    """Run one polling recording to completion. Not meant to be called by hand.
+
+    `sa start` spawns this detached when psr.exe is unavailable. It exits on
+    its own once the frame cap is reached or `sa stop` drops the stop sentinel,
+    packing the ZIP either way. It prints nothing: stdout and stderr belong to
+    a detached process with no console.
+    """
+    from psr_ai.core.recorder import run_polling_session
+
+    try:
+        run_polling_session(
+            staging_dir=Path(staging),
+            zip_path=Path(zip_path),
+            max_screenshots=maxsc,
+            interval=interval,
+            max_dim=max_dim,
+        )
+    except Exception:
+        raise SystemExit(1)
+
+
+# ------------------------------------------------------------------
+# sa context  (Hidden Context Layer)
+# ------------------------------------------------------------------
+
+@main.group()
+def context() -> None:
+    """Hidden Context Layer: browser context without an open DevTools window.
+
+    A Manifest V3 companion extension silently captures failed requests
+    (4xx/5xx), uncaught console errors, and the accessibility snapshot of the
+    element you click, then posts them to this local listener while a recording
+    session is active. Nothing is transmitted between sessions.
+
+    Everything ships inside psr-ai - there is nothing to install from a store
+    and nothing to pay for.
+
+      sa context install   open a browser with the layer already loaded
+      sa context browser   same thing, with browser/URL choice
+      sa context token     show (or rotate) the pairing token
+      sa context status    is the listener running? is it recording?
+      sa context events    dump what has been captured (JSON, for any tool)
+    """
+
+
+def _extension_dir() -> Path:
+    """Return the bundled extension directory (source tree or installed wheel)."""
+    import importlib.resources
+    try:
+        return Path(str(importlib.resources.files("psr_ai") / "extension"))
+    except (TypeError, AttributeError, ModuleNotFoundError):
+        return Path(__file__).resolve().parent / "extension"
+
+
+@context.command("browser")
+@click.option("--browser", "-b", "preferred", default=None,
+              help="Which browser to launch: chrome, edge, or brave. Default: first found.")
+@click.option("--url", "-u", default=None, help="URL to open in the instrumented browser.")
+def context_browser(preferred: str | None, url: str | None) -> None:
+    """Open a browser with the context layer already loaded - nothing to install.
+
+    Uses a dedicated PSR.ai profile, so your everyday browser is untouched and
+    logins here persist between sessions. This is the zero-install path: no
+    Chrome Web Store, no developer-mode clicking, no fees.
+
+    Examples:
+      sa context browser
+      sa context browser --browser edge
+      sa context browser --url https://myapp.local/checkout
+    """
+    from psr_ai.core import context_browser as cb
+
+    try:
+        browser, pid = cb.launch(preferred=preferred, url=url)
+    except cb.UnsupportedBrowserError as exc:
+        _warn(f"Error: {exc}")
+        raise SystemExit(1)
+    except FileNotFoundError as exc:
+        _warn(f"Error: {exc}")
+        raise SystemExit(1)
+    except OSError as exc:
+        _warn(f"Error: could not start the browser ({exc}).")
+        raise SystemExit(1)
+
+    _detail(f"  Executable: {browser.executable}")
+    _detail(f"  Profile:    {browser.profile_dir}")
+    _detail(f"  PID:        {pid}")
+    _echo(f"{browser.name} launched with the context layer loaded.")
+
+
+@context.command("install")
+@click.option("--launch/--no-launch", "do_launch", default=True, show_default=True,
+              help="Open an instrumented browser immediately instead of only printing steps.")
+@click.option("--browser", "-b", "preferred", default=None,
+              help="Which browser to launch: chrome, edge, or brave.")
+def context_install(do_launch: bool, preferred: str | None) -> None:
+    """Set up the context layer - by default it just opens a ready browser.
+
+    There is nothing to install from a store and nothing to pay for. The
+    extension ships inside the psr-ai package, and this command starts a
+    browser that already has it loaded.
+
+    Use --no-launch to get the manual instructions for loading the same
+    directory into your own everyday browser profile instead.
+    """
+    from psr_ai.core import context_browser as cb, context_server
+
+    ext_dir = _extension_dir()
+    if not (ext_dir / "manifest.json").exists():
+        _warn(f"Error: extension files not found at {ext_dir}")
+        raise SystemExit(1)
+
+    token = context_server.ensure_token()
+
+    if do_launch:
+        try:
+            browser, pid = cb.launch(preferred=preferred)
+        except (cb.UnsupportedBrowserError, FileNotFoundError, OSError) as exc:
+            _warn(f"Could not launch a browser automatically: {exc}")
+            _warn("Falling back to manual setup instructions.")
+            do_launch = False
+        else:
+            _detail(f"  Executable: {browser.executable}")
+            _detail(f"  Profile:    {browser.profile_dir}")
+            _detail(f"  PID:        {pid}")
+            _detail(f"  Extension:  {ext_dir}")
+            _echo(f"{browser.name} is open with the context layer loaded. Run `sa start` and work normally.")
+            return
+
+    _echo("PSR.ai Hidden Context Layer - manual setup")
+    _echo("")
+    _echo("1. Open  chrome://extensions  (or edge://extensions)")
+    _echo("2. Turn on 'Developer mode' (top right)")
+    _echo("3. Click 'Load unpacked' and choose:")
+    _echo(f"     {ext_dir}")
+    _echo("4. Open the extension's options and paste this pairing token:")
+    _echo(f"     {token}")
+    _echo("")
+    _echo(f"Listener endpoint: http://127.0.0.1:{context_server.DEFAULT_PORT}")
+    _echo("Then run `sa start` - capture begins automatically, no DevTools needed.")
+
+
+@context.command("token")
+@click.option("--rotate", is_flag=True, default=False, help="Generate a new token, invalidating the old one.")
+def context_token(rotate: bool) -> None:
+    """Print the pairing token the extension must send."""
+    from psr_ai.core import context_server
+
+    token = context_server.ensure_token(rotate=rotate)
+    if rotate:
+        _detail("Token rotated - re-paste it in the extension options.")
+    _detail(f"Stored at: {context_server.token_path()}")
+    _echo(token)
+
+
+@context.command("status")
+def context_status() -> None:
+    """Show whether the context listener is running and what it has collected."""
+    from psr_ai.core import context_server
+
+    state = context_server.read_state()
+    if not state:
+        _echo("Context layer: not running")
+        return
+
+    session_dir = Path(state.get("session_dir", ""))
+    events = len(context_server.load_context_events(session_dir)) if session_dir else 0
+    _detail(f"  PID:     {state.get('pid')}")
+    _detail(f"  Session: {state.get('session_id')}")
+    _detail(f"  Dir:     {session_dir}")
+    _echo(f"Context layer: listening on 127.0.0.1:{state.get('port')} · {events} events captured")
+
+
+@context.command("doctor")
+def context_doctor() -> None:
+    """Say plainly whether the context layer is working, and what to fix.
+
+    Checks every link in the chain and gives each a verdict. A silent session
+    is ambiguous - "the page had no errors" and "the extension is switched off"
+    both produce zero events - so this command exists to remove the ambiguity.
+
+    Exits 1 when something is broken, so it can gate a script.
+    """
+    from psr_ai.core import context_browser, context_server
+
+    problems: list[str] = []
+
+    def line(label: str, verdict: str, detail: str = "") -> None:
+        _echo(f"{label:<14}{verdict:<7}{detail}")
+
+    # 1. Listener ------------------------------------------------------
+    state = context_server.read_state()
+    port = int(state.get("port", context_server.DEFAULT_PORT)) if state else context_server.DEFAULT_PORT
+    token = context_server.read_token()
+    health = context_server.probe_listener(port=port, token=token)
+
+    if health is None:
+        line("Listener", "DOWN", "nothing answering on 127.0.0.1:" f"{port}")
+        _echo(f"{'':14}       -> start a recording: sa start")
+        problems.append("listener")
+    elif health.get("error") == "unauthorized":
+        line("Listener", "AUTH", f"running on 127.0.0.1:{port}, but rejected our token")
+        _echo(f"{'':14}       -> re-pair the extension: sa context token")
+        problems.append("token")
+    elif health.get("error"):
+        line("Listener", "ERROR", str(health.get("error")))
+        problems.append("listener")
+    else:
+        line("Listener", "OK", f"127.0.0.1:{port}")
+
+    healthy = bool(health) and not health.get("error")
+
+    # 2. Extension liveness --------------------------------------------
+    if healthy:
+        seen_ago = health.get("extension_seen_seconds_ago")
+        client = health.get("client") or {}
+        who = " ".join(filter(None, [client.get("browser"), client.get("version")])) or "unknown browser"
+        if health.get("extension_live"):
+            line("Extension", "OK", f"{who}, checked in {seen_ago:.0f}s ago")
+        elif health.get("extension_seen"):
+            line("Extension", "STALE", f"{who}, last seen {seen_ago:.0f}s ago")
+            _echo(f"{'':14}       -> the browser may be closed, or the extension was disabled")
+            problems.append("extension")
+        else:
+            line("Extension", "DOWN", "never checked in during this session")
+            _echo(f"{'':14}       -> open chrome://extensions and make sure")
+            _echo(f"{'':14}          'PSR.ai Hidden Context Layer' is enabled")
+            _echo(f"{'':14}       -> not installed yet? run: sa context install --no-launch")
+            problems.append("extension")
+
+    # 3. Session and events ---------------------------------------------
+    if healthy and state:
+        session_dir = Path(state.get("session_dir", ""))
+        line("Session", "OK", str(health.get("session_id") or state.get("session_id")))
+        events = context_server.load_context_events(session_dir)
+        counts: dict[str, int] = {}
+        for event in events:
+            counts[str(event.get("kind"))] = counts.get(str(event.get("kind")), 0) + 1
+        detail = ", ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "none yet"
+        line("Events", str(len(events)), detail)
+    elif healthy:
+        line("Session", "IDLE", "listener up but not attached to a recording")
+
+    # 4. Browsers -------------------------------------------------------
+    browsers = context_browser.find_browsers()
+    if browsers:
+        detail = ", ".join(
+            f"{b.name}{'' if b.supports_auto_load else ' (manual load only)'}" for b in browsers
+        )
+        line("Browsers", "OK", detail)
+    else:
+        line("Browsers", "NONE", "no Chromium-family browser found")
+        problems.append("browser")
+
+    if problems:
+        _echo("")
+        _echo(f"Not ready: {', '.join(sorted(set(problems)))}. Fix the arrows above.")
+        raise SystemExit(1)
+    _echo("")
+    _echo("Context layer is working.")
+
+
+@context.command("test")
+@click.option("--timeout", default=25.0, show_default=True, help="Seconds to wait for events.")
+@click.option("--keep-open", is_flag=True, default=False, help="Leave the test page open afterwards.")
+def context_test(timeout: float, keep_open: bool) -> None:
+    """Prove the whole loop works, end to end, in about ten seconds.
+
+    Serves a local page that deliberately fails a request and logs a console
+    error, opens it in your browser, and reports which signals actually
+    arrived. This is the difference between believing it works and knowing.
+
+    A recording session must be active (run `sa start` first) because the
+    listener drops everything when nothing is being recorded.
+    """
+    from psr_ai.core import context_server
+    from psr_ai.core.context_selftest import run_self_test
+
+    state = context_server.read_state()
+    if not state:
+        _warn("No active recording session - the listener drops context when idle.")
+        _warn("Run `sa start` first, then `sa context test`.")
+        raise SystemExit(1)
+
+    _detail("Serving a page that fails a request and logs a console error...")
+    result = run_self_test(
+        session_dir=Path(state.get("session_dir", "")),
+        timeout=timeout,
+        keep_open=keep_open,
+        echo=_detail,
+    )
+
+    for label, ok in result.checks.items():
+        _echo(f"  [{'PASS' if ok else 'FAIL'}]  {label}")
+
+    _echo("")
+    if result.passed:
+        _echo(f"Context layer verified: {result.score}.")
+        return
+
+    _echo(f"Context layer incomplete: {result.score}.")
+    for hint in result.hints:
+        _warn(f"  {hint}")
+    raise SystemExit(1)
+
+
+@context.command("events")
+@click.option("--session-dir", default=None, type=click.Path(),
+              help="Session directory to read. Defaults to the live session.")
+@click.option("--kind", default=None,
+              type=click.Choice(["network_failure", "console_error", "resource_error", "element_click"]),
+              help="Only show events of this kind.")
+@click.option("--limit", default=0, type=int, help="Show at most N events (0 = all).")
+@click.option("--summary", is_flag=True, default=False, help="Print counts per kind instead of events.")
+def context_events(session_dir: str | None, kind: str | None, limit: int, summary: bool) -> None:
+    """Dump captured browser context as JSON on stdout.
+
+    This is the integration point for any tool that is not MCP-aware: pipe it
+    into jq, into a script, or straight into an agent prompt.
+
+    Examples:
+      sa context events
+      sa context events --kind network_failure
+      sa context events --summary
+      sa context events --session-dir psr_output/psr_20260804_120000_output
+    """
+    from psr_ai.core import context_server
+
+    if session_dir:
+        target = Path(session_dir)
+    else:
+        state = context_server.read_state()
+        if not state:
+            _warn("No live session. Pass --session-dir to read a finished one.")
+            raise SystemExit(1)
+        target = Path(state.get("session_dir", ""))
+
+    events = context_server.load_context_events(target)
+    if kind:
+        events = [e for e in events if e.get("kind") == kind]
+    if limit > 0:
+        events = events[-limit:]
+
+    if summary:
+        counts: dict[str, int] = {}
+        for event in events:
+            counts[str(event.get("kind"))] = counts.get(str(event.get("kind")), 0) + 1
+        _echo(json.dumps({"session_dir": str(target), "total": len(events), "by_kind": counts}, indent=2))
+        return
+
+    _echo(json.dumps(events, indent=2, ensure_ascii=False))
+
+
+@context.command("serve")
+@click.option("--session-dir", required=True, type=click.Path(), help="Directory to write context.jsonl into.")
+@click.option("--session-id", default=None, help="Identifier reported to the extension.")
+@click.option("--port", default=None, type=int, help="Port to bind on 127.0.0.1.")
+@click.option("--stop-file", default=None, type=click.Path(), help="Sentinel path that ends the listener.")
+@click.option("--foreground", is_flag=True, default=False, help="Log bind details instead of staying silent.")
+def context_serve(
+    session_dir: str,
+    session_id: str | None,
+    port: int | None,
+    stop_file: str | None,
+    foreground: bool,
+) -> None:
+    """Run the context listener until stopped. Normally started by `sa start`.
+
+    Blocks. Ends when `sa stop` drops the stop sentinel.
+    """
+    from psr_ai.core import context_server
+
+    token = context_server.ensure_token()
+    if foreground:
+        _echo(f"Listening on 127.0.0.1:{port or context_server.DEFAULT_PORT}")
+        _echo(f"  Session dir: {session_dir}")
+        _echo("  Ctrl-C to stop.")
+
+    try:
+        context_server.serve_context_session(
+            session_dir=Path(session_dir),
+            session_id=session_id,
+            port=port or context_server.DEFAULT_PORT,
+            token=token,
+            stop_file=Path(stop_file) if stop_file else None,
+        )
+    except OSError as exc:
+        _warn(f"Error: context listener could not bind ({exc}).")
+        raise SystemExit(1)
 
 
 # ------------------------------------------------------------------
@@ -655,10 +1431,11 @@ def capture(
             raise SystemExit(1)
 
 
-# Hebrew alias: sa צלם — wrapped to avoid UnicodeEncodeError on cp1252 terminals
+# Hebrew alias: sa צלם — only register on terminals that support Unicode
 try:
+    "צלם".encode(click.utils._default_text_stdout().encoding or "utf-8")
     main.add_command(capture, name="צלם")
-except Exception:
+except (UnicodeEncodeError, Exception):
     pass
 
 
@@ -1013,8 +1790,9 @@ def replay(
 # sa mcp
 # ------------------------------------------------------------------
 
-@main.command()
-def mcp() -> None:
+@main.group(invoke_without_command=True)
+@click.pass_context
+def mcp(ctx: click.Context) -> None:
     """Start the PSR.ai MCP JSON-RPC server on stdin/stdout.
 
     Blocks the terminal and keeps stdin/stdout reserved for full-duplex
@@ -1028,11 +1806,181 @@ def mcp() -> None:
       psr_stop_and_parse   - stop, parse, and return the session report
       psr_quick_snapshot   - capture and return an optimized Base64 screenshot
 
+    Subcommands:
+      sa mcp install   - register this server with Claude Desktop
+      sa mcp path      - print the Claude Desktop config path
+
     Example (manual test):
       echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | sa mcp
     """
+    if ctx.invoked_subcommand is not None:
+        return
     from psr_ai.mcp import main_loop
     main_loop()
+
+
+# Default server key written into claude_desktop_config.json.
+_MCP_SERVER_KEY = "psr-ai"
+
+
+def _claude_desktop_config_path() -> Path:
+    """Return the Claude Desktop config path for the current OS.
+
+    Windows : %APPDATA%\\Claude\\claude_desktop_config.json
+    macOS   : ~/Library/Application Support/Claude/claude_desktop_config.json
+    Linux   : $XDG_CONFIG_HOME/Claude/claude_desktop_config.json
+    """
+    if sys.platform == "win32":
+        base = Path(os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming"))
+        config_dir = base / "Claude"
+    elif sys.platform == "darwin":
+        config_dir = Path.home() / "Library" / "Application Support" / "Claude"
+    else:
+        base = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
+        config_dir = base / "Claude"
+    return config_dir / "claude_desktop_config.json"
+
+
+def _mcp_server_block() -> dict:
+    """Build the MCP server block, resolved against the *current* environment.
+
+    Every path is absolute and derived from the running interpreter, so inside
+    a venv the block points at that venv - no PATH lookup, and no "works in my
+    shell but not in Claude Desktop". The `sa` console script is preferred when
+    it can be located; otherwise `python -m psr_ai` is used, which needs only
+    the interpreter itself.
+    """
+    import sysconfig
+
+    exe_dir = Path(sys.executable).parent
+    script_name = "sa.exe" if sys.platform == "win32" else "sa"
+    candidates = [
+        Path(sysconfig.get_path("scripts")) / script_name,   # venv or base install
+        exe_dir / script_name,                               # venv layout on POSIX
+        exe_dir / "Scripts" / script_name,                   # base install on Windows
+        exe_dir / "bin" / script_name,
+    ]
+    for candidate in candidates:
+        try:
+            if candidate.is_file():
+                return {"command": str(candidate), "args": ["mcp"]}
+        except OSError:
+            continue
+    return {"command": sys.executable, "args": ["-m", "psr_ai", "mcp"]}
+
+
+def _load_json_config(path: Path) -> dict:
+    """Read a JSON config file, tolerating a UTF-8 BOM. Missing file -> {}."""
+    if not path.exists():
+        return {}
+    raw = path.read_text(encoding="utf-8-sig")
+    if not raw.strip():
+        return {}
+    data = json.loads(raw)
+    if not isinstance(data, dict):
+        raise ValueError("top-level JSON value is not an object")
+    return data
+
+
+@mcp.command("path")
+def mcp_path() -> None:
+    """Print the Claude Desktop config path for this machine."""
+    _echo(str(_claude_desktop_config_path()))
+
+
+@mcp.command("install")
+@click.option(
+    "--config", "config_path",
+    default=None,
+    type=click.Path(),
+    help="Config file to modify. Defaults to the OS Claude Desktop location.",
+)
+@click.option(
+    "--name",
+    default=_MCP_SERVER_KEY,
+    show_default=True,
+    help="Key to register the server under in mcpServers.",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Overwrite an existing entry with the same name.",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Print the block that would be written and exit.",
+)
+def mcp_install(config_path: str | None, name: str, force: bool, dry_run: bool) -> None:
+    """Register the PSR.ai MCP server with Claude Desktop.
+
+    Auto-detects the config location per OS, resolves the interpreter of the
+    current virtualenv, and merges the server into mcpServers. Other servers
+    already in the file are preserved untouched; the previous file is copied
+    to <name>.json.bak before anything is written.
+
+    Examples:
+      sa mcp install
+      sa mcp install --dry-run
+      sa mcp install --force
+      sa mcp install --config ~/custom/claude_desktop_config.json
+    """
+    target = Path(config_path).expanduser() if config_path else _claude_desktop_config_path()
+    block = _mcp_server_block()
+
+    if dry_run:
+        _detail(f"Config: {target}")
+        _echo(json.dumps({"mcpServers": {name: block}}, indent=2))
+        return
+
+    try:
+        config = _load_json_config(target)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        _warn(f"Error: {target} is not readable as JSON ({exc}).")
+        _warn("Fix or move the file, then re-run `sa mcp install`.")
+        raise SystemExit(1)
+
+    servers = config.get("mcpServers", {})
+    if not isinstance(servers, dict):
+        # Replacing it would silently discard whatever the user had there.
+        _warn(f"Error: 'mcpServers' in {target} is not an object - refusing to overwrite it.")
+        raise SystemExit(1)
+    existing = servers.get(name)
+
+    if existing == block:
+        _echo(f"Already installed: {name} -> {target}")
+        return
+    if existing is not None and not force:
+        _warn(f"Error: '{name}' already exists in {target}. Re-run with --force to replace it.")
+        raise SystemExit(1)
+
+    servers[name] = block
+    config["mcpServers"] = servers
+
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            import shutil
+            backup = target.with_suffix(target.suffix + ".bak")
+            # Byte-for-byte, so the backup restores the original exactly
+            # (encoding, BOM, and formatting included).
+            shutil.copy2(target, backup)
+            _detail(f"  Backup: {backup}")
+        # Write to a temp file in the same directory, then swap it in, so an
+        # interrupted write can never truncate a working config.
+        tmp = target.with_name(target.name + ".tmp")
+        tmp.write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        os.replace(tmp, target)
+    except OSError as exc:
+        _warn(f"Error: could not write {target} ({exc}).")
+        raise SystemExit(1)
+
+    _detail(f"  Command: {block['command']} {' '.join(block['args'])}")
+    _detail(f"  Servers in file: {', '.join(sorted(servers))}")
+    _echo(f"Installed: {name} -> {target}")
+    _detail("Restart Claude Desktop to load the server.")
 
 
 # ------------------------------------------------------------------
@@ -1832,49 +2780,58 @@ def instagram(
     help="Output directory. Defaults to psr_output/video_analysis/.",
 )
 @click.option(
-    "--fps",
-    default=0.5,
-    type=float,
-    show_default=True,
-    help="Frames per second to sample (0.5 = 1 frame every 2 seconds).",
-)
-@click.option(
     "--max-frames",
-    default=300,
+    default=100,
     type=int,
     show_default=True,
-    help="Maximum number of frames to extract.",
+    help="Maximum number of frames to extract (auto-fps scales to fit budget).",
 )
 @click.option(
-    "--whisper-model",
-    default="base",
+    "--start",
+    "start_seconds",
+    default=None,
+    type=float,
+    help="Focus range start in seconds (enables denser frame sampling).",
+)
+@click.option(
+    "--end",
+    "end_seconds",
+    default=None,
+    type=float,
+    help="Focus range end in seconds.",
+)
+@click.option(
+    "--resolution",
+    default=512,
+    type=int,
     show_default=True,
-    type=click.Choice(["tiny", "base", "small", "medium", "large"]),
-    help="Whisper model size for transcription.",
+    help="Frame width in pixels. Higher = more detail but more tokens.",
 )
 def video_analyze(
     source: str,
     question: str | None,
     output: str | None,
-    fps: float,
     max_frames: int,
-    whisper_model: str,
+    start_seconds: float | None,
+    end_seconds: float | None,
+    resolution: int,
 ) -> None:
     """Analyze a video using frames + audio transcription + Claude.
 
     SOURCE can be a URL (YouTube, TikTok, Instagram Reel, Twitter/X, etc.)
     or a local video file path.
 
-    Claude receives sampled frames and the full audio transcript, then
-    answers your question or produces a structured summary.
+    Frame rate is automatically scaled to fit the frame budget (short videos
+    get dense sampling, long videos get sparse). Use --start/--end to focus
+    on a specific section with higher density.
 
     Requires: pip install psr-ai[analyze]
 
     Examples:
       sa video-analyze https://www.youtube.com/watch?v=abc123
-      sa video-analyze https://www.tiktok.com/@user/video/123 -q "what is this about?"
       sa video-analyze lecture.mp4 -q "summarize the key points"
-      sa video-analyze video.mp4 --whisper-model small --fps 1
+      sa video-analyze video.mp4 --start 60 --end 120 -q "what happens here?"
+      sa video-analyze clip.mp4 --resolution 1024 -q "read the text on screen"
     """
     from psr_ai.core.video_analyzer import analyze_video
 
@@ -1892,9 +2849,10 @@ def video_analyze(
             source,
             out_dir,
             question=question or default_question,
-            fps=fps,
             max_frames=max_frames,
-            whisper_model=whisper_model,
+            start_seconds=start_seconds,
+            end_seconds=end_seconds,
+            resolution=resolution,
             echo_fn=_echo,
         )
         _echo(result.report())

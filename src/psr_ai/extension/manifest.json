@@ -1,0 +1,63 @@
+{
+  "manifest_version": 3,
+  "name": "PSR.ai Hidden Context Layer",
+  "version": "0.2.0",
+  "description": "Silently feeds failed requests, console errors, and clicked-element accessibility data to a local PSR.ai recording session. No DevTools window required.",
+  "minimum_chrome_version": "111",
+
+  "permissions": [
+    "webRequest",
+    "storage",
+    "alarms"
+  ],
+
+  "host_permissions": [
+    "<all_urls>",
+    "http://127.0.0.1:8765/*"
+  ],
+
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "all_frames": true,
+      "world": "ISOLATED"
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["inject.js"],
+      "run_at": "document_start",
+      "all_frames": true,
+      "world": "MAIN"
+    }
+  ],
+
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": false
+  },
+
+  "action": {
+    "default_title": "PSR.ai context layer",
+    "default_popup": "options.html",
+    "default_icon": {
+      "16": "icon16.png",
+      "32": "icon32.png",
+      "48": "icon48.png",
+      "128": "icon128.png"
+    }
+  },
+
+  "icons": {
+    "16": "icon16.png",
+    "32": "icon32.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  }
+}

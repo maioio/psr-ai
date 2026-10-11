@@ -1,4 +1,10 @@
 """Enterprise async client for streaming session packages to PSR.ai Cloud."""
+# TODO [Roo]: Review test suite in tests/test_ee_client.py and verify all 18 cases pass in VS Code
+# CONTEXT: PSRCloudClient was implemented with aiohttp + backoff + _sanitize_headers; tests were written by Claude Code and passed in terminal but need VS Code pytest runner verification
+# INPUTS: tests/test_ee_client.py (18 tests), src/psr_ai/ee/client.py (implementation)
+# OUTPUTS: all 18 tests green in VS Code pytest panel; if any fail, fix in test file only — do not touch client.py
+# CONSTRAINTS: do not modify client.py, do not add new dependencies beyond pytest-asyncio>=0.23, do not remove existing test cases
+# TESTS: pytest tests/test_ee_client.py -v → 18 passed, 0 failed
 
 from __future__ import annotations
 

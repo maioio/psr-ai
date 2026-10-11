@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>PSR.ai context layer</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      font: 13px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+      margin: 0; padding: 16px; width: 320px;
+    }
+    h1 { font-size: 14px; margin: 0 0 4px; }
+    p.sub { margin: 0 0 14px; opacity: .7; }
+    label { display: block; margin: 12px 0 4px; font-weight: 600; }
+    input[type="text"], input[type="password"] {
+      width: 100%; box-sizing: border-box; padding: 6px 8px;
+      border: 1px solid rgba(128,128,128,.45); border-radius: 6px;
+      background: transparent; color: inherit; font-family: ui-monospace, monospace;
+    }
+    .row { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
+    button {
+      padding: 6px 12px; border-radius: 6px; border: 1px solid rgba(128,128,128,.45);
+      background: transparent; color: inherit; cursor: pointer; font: inherit;
+    }
+    button:hover { border-color: rgba(128,128,128,.9); }
+    #status { margin-top: 14px; padding: 8px 10px; border-radius: 6px;
+              background: rgba(128,128,128,.12); font-family: ui-monospace, monospace; }
+    .hint { opacity: .65; margin-top: 12px; }
+    code { font-family: ui-monospace, monospace; }
+  </style>
+</head>
+<body>
+  <h1>PSR.ai context layer</h1>
+  <p class="sub">Feeds failed requests, console errors, and clicked-element context to an active <code>sa start</code> session.</p>
+
+  <div class="row">
+    <input type="checkbox" id="enabled">
+    <label for="enabled" style="margin:0">Capture while recording</label>
+  </div>
+
+  <label for="endpoint">Listener endpoint</label>
+  <input type="text" id="endpoint" spellcheck="false" placeholder="http://127.0.0.1:8765">
+
+  <label for="token">Pairing token</label>
+  <input type="password" id="token" spellcheck="false" placeholder="run: sa context token">
+
+  <div class="row">
+    <button id="save">Save</button>
+    <button id="test">Test connection</button>
+  </div>
+
+  <div id="status">Not checked yet.</div>
+
+  <p class="hint">Get the token with <code>sa context token</code>. Nothing is sent while no recording session is active.</p>
+
+  <script src="options.js"></script>
+</body>
+</html>

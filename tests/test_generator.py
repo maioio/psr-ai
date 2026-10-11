@@ -159,8 +159,8 @@ class TestAIContextBlock:
         report = MarkdownGenerator(data_path).write(tmp_path)
         content = report.read_text(encoding="utf-8")
 
-        assert "STEP 000" in content
-        assert "STEP 001" in content
+        assert "[000]" in content
+        assert "[001]" in content
 
     def test_ai_block_contains_program_name(self, tmp_path):
         data_path = _make_data_json(tmp_path)
@@ -185,12 +185,12 @@ class TestAIContextBlock:
         assert "```text" in content
 
     def test_ai_block_screenshot_flag(self, tmp_path):
-        # Steps with screenshots should show screenshot:yes.
+        # Steps with screenshots should show their screenshot path.
         data_path = _make_data_json(tmp_path)
         report = MarkdownGenerator(data_path).write(tmp_path)
         content = report.read_text(encoding="utf-8")
 
-        assert "screenshot:yes" in content
+        assert "-> screenshots/step_000.png" in content
 
     def test_ai_block_no_screenshot_flag(self, tmp_path):
         steps = [{"index": 0, "label": "Step 0", "timestamp": "",
@@ -199,7 +199,7 @@ class TestAIContextBlock:
         report = MarkdownGenerator(data_path).write(tmp_path)
         content = report.read_text(encoding="utf-8")
 
-        assert "screenshot:no" in content
+        assert "-> -" in content
 
     def test_ai_block_empty_session(self, tmp_path):
         data_path = _make_data_json(tmp_path, steps=[])

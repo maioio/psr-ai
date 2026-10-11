@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "psr-ai"
-version = "0.1.0"
+version = "0.2.0"
 description = "AI-native CLI wrapper for Windows Steps Recorder (PSR.exe)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -29,7 +29,10 @@ classifiers = [
 ]
 
 # Runtime: only click is required.
-# Pillow is optional: needed for GIF generation (sa stop / sa pub --gif).
+# Pillow is optional but recommended on Windows: it powers GIF generation
+# (sa stop / sa pub --gif) and the in-memory frame de-duplication used by the
+# polling fallback recorder. Without it the fallback still records - via the
+# native OS screenshot tool - but cannot discard idle frames.
 dependencies = [
     "click>=8.1",
 ]
@@ -37,6 +40,7 @@ dependencies = [
 [project.optional-dependencies]
 cloud   = ["aiohttp>=3.9"]
 gif     = ["Pillow>=10.0"]
+record  = ["Pillow>=10.0", "pynput>=1.7"]
 ai      = ["anthropic>=0.25", "openai>=1.0"]
 desktop = ["pynput>=1.7"]
 agent   = ["pyautogui>=0.9.54", "Pillow>=10.0", "anthropic>=0.25"]
@@ -79,9 +83,10 @@ where = ["src"]
 [tool.setuptools.package-dir]
 "" = "src"
 
-# Include the bundled PSR shortcut so it is present after pip install.
+# Ship the companion Chrome extension inside the wheel so `sa context install`
+# can point at a real directory on any machine, source checkout or pip install.
 [tool.setuptools.package-data]
-"psr_ai" = []
+"psr_ai" = ["extension/*.json", "extension/*.js", "extension/*.html", "extension/*.png"]
 
 [tool.setuptools.data-files]
 # Ship the fallback .lnk asset alongside the package.

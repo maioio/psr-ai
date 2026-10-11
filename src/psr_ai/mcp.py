@@ -48,7 +48,12 @@ except Exception:  # pragma: no cover
 # ---------------------------------------------------------------------------
 
 _SERVER_NAME      = "psr-ai"
-_SERVER_VERSION   = "0.1.0"
+
+try:  # Single source of truth for the version - never let these drift.
+    from psr_ai import __version__ as _SERVER_VERSION
+except Exception:  # pragma: no cover
+    _SERVER_VERSION = "0.0.0"
+
 _PROTOCOL_VERSION = "2024-11-05"
 
 # ---------------------------------------------------------------------------
@@ -127,6 +132,80 @@ _TOOLS: list[dict[str, Any]] = [
                     ),
                 },
             },
+            "required": [],
+        },
+    },
+    {
+        "name": "psr_open_context_browser",
+        "description": (
+            "Open a browser with the PSR.ai Hidden Context Layer already loaded, so "
+            "failed network requests (4xx/5xx), uncaught console errors, and the "
+            "accessibility snapshot of every clicked element are captured silently - "
+            "with no DevTools window open and no debugger infobar. "
+            "The extension ships inside psr-ai; nothing is installed from a web store. "
+            "Uses a dedicated PSR.ai browser profile, so the user's everyday browser is "
+            "untouched and logins in this profile persist between sessions. "
+            "Call this before psr_start_recording when the task involves debugging a "
+            "web page, then ask the user to reproduce the problem in the window that opens."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "browser": {
+                    "type": "string",
+                    "description": "Which browser to launch: chrome, edge, or brave. Default: first installed.",
+                },
+                "url": {
+                    "type": "string",
+                    "description": "Optional URL to open immediately.",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "psr_get_browser_context",
+        "description": (
+            "Return the browser context captured so far by the Hidden Context Layer: "
+            "failed network requests with their response bodies, uncaught console errors "
+            "with stack traces, and the accessibility snapshot (role, accessible name, "
+            "states, selector) of clicked elements. "
+            "Use this while a recording is running to see what actually broke in the "
+            "page, instead of guessing from a screenshot. Returns a compact JSON summary."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "kind": {
+                    "type": "string",
+                    "description": (
+                        "Filter to one kind: network_failure, console_error, "
+                        "resource_error, or element_click. Omit for everything."
+                    ),
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Return at most this many of the most recent events. Default 50.",
+                },
+                "session_dir": {
+                    "type": "string",
+                    "description": "Read a finished session directory instead of the live one.",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "psr_context_status",
+        "description": (
+            "Report whether the Hidden Context Layer listener is running, which "
+            "recording session it is attached to, how many browser-context events it "
+            "has captured, and whether a supported browser is available to instrument. "
+            "Use this to check the layer is live before telling the user to reproduce a bug."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
             "required": [],
         },
     },
@@ -267,7 +346,153 @@ def _dispatch_tool(name: str, args: dict[str, Any]) -> str:
         return _tool_psr_quick_snapshot(args)
     if name == "psr_fetch_link":
         return _tool_psr_fetch_link(args)
+    if name == "psr_open_context_browser":
+        return _tool_psr_open_context_browser(args)
+    if name == "psr_get_browser_context":
+        return _tool_psr_get_browser_context(args)
+    if name == "psr_context_status":
+        return _tool_psr_context_status(args)
     raise ValueError(f"Unimplemented tool: {name}")
+
+
+# ---------------------------------------------------------------------------
+# Hidden Context Layer tools
+# ---------------------------------------------------------------------------
+
+def _tool_psr_open_context_browser(args: dict[str, Any]) -> str:
+    """Launch an instrumented browser and describe what was opened."""
+    from psr_ai.core import context_browser
+
+    try:
+        browser, pid = context_browser.launch(
+            preferred=args.get("browser") or None,
+            url=args.get("url") or None,
+        )
+    except FileNotFoundError as exc:
+        return (
+            f"Could not open an instrumented browser: {exc}\n"
+            "Ask the user to run `sa context install --no-launch` and load the "
+            "printed directory via chrome://extensions instead."
+        )
+    except OSError as exc:
+        return f"Could not start the browser: {exc}"
+
+    return (
+        f"{browser.name} is open with the Hidden Context Layer loaded (pid {pid}).\n"
+        f"Profile: {browser.profile_dir}\n"
+        "Failed requests, console errors, and clicked-element accessibility data are "
+        "now captured silently while a recording session is active.\n"
+        "Next: call psr_start_recording, then ask the user to reproduce the problem "
+        "in that window."
+    )
+
+
+def _tool_psr_context_status(args: dict[str, Any]) -> str:
+    """Report listener state, event count, and available browsers."""
+    from pathlib import Path
+
+    from psr_ai.core import context_browser, context_server
+
+    state = context_server.read_state()
+    browsers = ", ".join(b.name for b in context_browser.find_browsers()) or "none found"
+
+    if not state:
+        return (
+            "Hidden Context Layer: listener NOT running.\n"
+            f"Browsers available to instrument: {browsers}\n"
+            "Start a recording with psr_start_recording (or `sa start`) to bring it up."
+        )
+
+    session_dir = Path(state.get("session_dir", ""))
+    events = context_server.load_context_events(session_dir)
+    counts: dict[str, int] = {}
+    for event in events:
+        counts[str(event.get("kind"))] = counts.get(str(event.get("kind")), 0) + 1
+
+    # Liveness matters more than the event count: zero events with a live
+    # extension means a clean page, zero events without one means no capture.
+    health = context_server.probe_listener(
+        port=int(state.get("port", context_server.DEFAULT_PORT)),
+        token=context_server.read_token(),
+    )
+    if health and health.get("extension_live"):
+        client = health.get("client") or {}
+        who = " ".join(filter(None, [client.get("browser"), client.get("version")])) or "browser"
+        extension_line = (
+            f"Extension: LIVE ({who}, last check-in "
+            f"{health.get('extension_seen_seconds_ago')}s ago)"
+        )
+    elif health and health.get("extension_seen"):
+        extension_line = (
+            f"Extension: STALE (last seen {health.get('extension_seen_seconds_ago')}s ago) - "
+            "the browser may be closed or the extension disabled."
+        )
+    else:
+        extension_line = (
+            "Extension: NOT DETECTED - nothing has checked in. Browser context will be "
+            "empty until the user enables it at chrome://extensions, or opens a browser "
+            "with psr_open_context_browser. Tell the user to run `sa context doctor`."
+        )
+
+    return (
+        "Hidden Context Layer: listening on "
+        f"127.0.0.1:{state.get('port')} (pid {state.get('pid')})\n"
+        f"{extension_line}\n"
+        f"Session: {state.get('session_id')}\n"
+        f"Directory: {session_dir}\n"
+        f"Events captured: {len(events)} {counts or ''}\n"
+        f"Browsers available to instrument: {browsers}"
+    )
+
+
+def _tool_psr_get_browser_context(args: dict[str, Any]) -> str:
+    """Return captured browser context as compact JSON."""
+    from pathlib import Path
+
+    from psr_ai.core import context_server
+
+    session_dir_arg = args.get("session_dir")
+    if session_dir_arg:
+        session_dir = Path(str(session_dir_arg))
+    else:
+        state = context_server.read_state()
+        if not state:
+            return (
+                "No live recording session. Start one with psr_start_recording, "
+                "or pass session_dir to read a finished session."
+            )
+        session_dir = Path(state.get("session_dir", ""))
+
+    events = context_server.load_context_events(session_dir)
+    kind = args.get("kind")
+    if kind:
+        events = [e for e in events if e.get("kind") == kind]
+
+    try:
+        limit = int(args.get("limit", 50))
+    except (TypeError, ValueError):
+        limit = 50
+    if limit > 0:
+        events = events[-limit:]
+
+    if not events:
+        return (
+            f"No browser context captured yet in {session_dir}.\n"
+            "Check psr_context_status, and make sure the user is working in the "
+            "browser opened by psr_open_context_browser."
+        )
+
+    counts: dict[str, int] = {}
+    for event in events:
+        counts[str(event.get("kind"))] = counts.get(str(event.get("kind")), 0) + 1
+
+    payload = {
+        "session_dir": str(session_dir),
+        "returned": len(events),
+        "by_kind": counts,
+        "events": events,
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
 def _tool_psr_start_recording(args: dict[str, Any]) -> str:

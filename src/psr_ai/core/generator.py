@@ -19,7 +19,7 @@ from psr_ai.core.parser import RecordingSession, save_images
 _AI_CONTEXT_HEADER = """\
 <!-- AI CONTEXT BLOCK
      Paste this block into any LLM to give it full context of the recorded session.
-     Format: STEP | TIMESTAMP | PROGRAM | ACTION
+     Format: [STEP_ID] TIMESTAMP | PROGRAM | ACTION -> SCREENSHOT_PATH
 -->
 """
 
@@ -157,9 +157,10 @@ class MarkdownGenerator:
         program and within _MERGE_THRESHOLD_SECONDS are collapsed into a single
         summary line to minimise token cost when pasting into an LLM.
 
-        Line formats:
-          STEP NNN | TIMESTAMP | PROGRAM | ACTION | screenshot:yes/no
-          [Steps N-M] | TIMESTAMP | PROGRAM | SUMMARY | screenshot:yes/no
+        Line format:
+          [STEP_ID] TIMESTAMP | PROGRAM | ACTION -> SCREENSHOT_PATH
+          STEP_ID is "NNN" or a merged range "N-M". SCREENSHOT_PATH is "-"
+          when no screenshot was captured for that step.
         """
         if not steps:
             summary_lines = f"No steps recorded. Source: {source}\n"
@@ -178,14 +179,12 @@ class MarkdownGenerator:
                 prog = s.get("program") or "?"
                 action = s.get("action_text") or s.get("label") or "?"
                 raw_ss = s.get("screenshot", "")
-                screenshot = "yes" if raw_ss and _safe_relative(raw_ss) else "no"
+                safe_ss = _safe_relative(raw_ss) if raw_ss else ""
+                screenshot = safe_ss if safe_ss else "-"
                 step_range = s.get("_merged_range")
-                if step_range:
-                    step_label = f"[Steps {step_range}]"
-                else:
-                    step_label = f"STEP {s['index']:03d}"
+                step_id = step_range if step_range else f"{s['index']:03d}"
                 lines.append(
-                    f"{step_label} | {ts} | {prog} | {action} | screenshot:{screenshot}"
+                    f"[{step_id}] {ts} | {prog} | {action} -> {screenshot}"
                 )
             summary_lines = "\n".join(lines) + "\n"
 
