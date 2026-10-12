@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="400" height="480" viewBox="0 0 400 480" role="img" aria-label="PSR.ai favicon workflow symbol">
+<title>PSR.ai favicon workflow symbol</title><defs>
+     <linearGradient id="frame" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#F8FCFE"/><stop offset="0.50" stop-color="#ECF2F5"/><stop offset="1" stop-color="#D4E1E9"/></linearGradient>
+     <linearGradient id="screen-blue" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#38C3EF"/><stop offset="0.58" stop-color="#078FCE"/><stop offset="1" stop-color="#0564B2"/></linearGradient>
+     <linearGradient id="screen-green" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#068B91"/><stop offset="1" stop-color="#10C68A"/></linearGradient>
+     <linearGradient id="node-blue" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#058DC9"/><stop offset="1" stop-color="#00618A"/></linearGradient>
+     <linearGradient id="node-cyan" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#16C4EB"/><stop offset="1" stop-color="#008CAB"/></linearGradient>
+     <linearGradient id="node-green" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#17C5A8"/><stop offset="1" stop-color="#007A63"/></linearGradient>
+     <linearGradient id="record" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FF6564"/><stop offset="0.56" stop-color="#F12A30"/><stop offset="1" stop-color="#B80009"/></linearGradient>
+     <linearGradient id="night-bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#153C5C"/><stop offset="0.58" stop-color="#0B2C4A"/><stop offset="1" stop-color="#05152C"/></linearGradient>
+     <clipPath id="window-clip"><rect x="52" y="129" width="151" height="155" rx="6"/></clipPath>
+     </defs><g fill="none" stroke-linecap="round" stroke-linejoin="round">
+ <path d="M52 238H88 Q124 238 132 196 Q142 137 194 137H220" stroke="url(#node-blue)" stroke-width="27"/>
+ <path d="M52 265H90 Q132 265 145 300 Q162 330 199 330H220" stroke="url(#node-green)" stroke-width="27"/>
+ <rect x="217" y="88" width="110" height="106" rx="20" fill="#FFFFFF" stroke="url(#node-blue)" stroke-width="25"/>
+ <rect x="216" y="279" width="110" height="109" rx="20" fill="#FFFFFF" stroke="url(#node-green)" stroke-width="25"/>
+ </g></svg>

@@ -12,7 +12,3 @@
   --sl-color-accent: #2f55b8;
   --sl-color-accent-high: #1b3270;
 }
-
-/* Brand mark: a blue ring on a dark #181a20 disc. In dark mode it sits on a white chip so the disc edge stays visible. */
-.site-title img { height: 1.75rem; width: 1.75rem; border-radius: 50%; }
-:root[data-theme='dark'] .site-title img { background: #fff; padding: 2px; box-sizing: content-box; }

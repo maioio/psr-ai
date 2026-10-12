@@ -9,8 +9,10 @@ export default defineConfig({
     starlight({
       title: 'PSR.ai',
       favicon: '/favicon.ico',
-      logo: { src: './src/assets/psr-ai-mark.png', alt: 'PSR.ai' },
+      // The logo already spells PSR.ai, so the title text stays for screen readers only and the image needs no alt.
+      logo: { light: './src/assets/logo-horizontal.svg', dark: './src/assets/logo-horizontal-dark.svg', replacesTitle: true },
       head: [
+        { tag: 'link', attrs: { rel: 'icon', type: 'image/svg+xml', href: '/psr-ai/favicon.svg' } },
         { tag: 'link', attrs: { rel: 'icon', type: 'image/png', sizes: '32x32', href: '/psr-ai/favicon-32.png' } },
         { tag: 'link', attrs: { rel: 'apple-touch-icon', href: '/psr-ai/apple-touch-icon.png' } },
         { tag: 'meta', attrs: { property: 'og:image:width', content: '1200' } },
