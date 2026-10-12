@@ -28,6 +28,8 @@ const goals = [
   ['Describe and clean steps', 'sa analyze', 'A vision model writes a description per screenshot; sa review lets you drop steps.', 'ai-analysis'],
   ['Turn a session into a test', 'sa testgen', 'Generate a Playwright test from the recorded steps.', 'replay-and-tests'],
   ['Capture a web page', 'sa capture <url>', 'Save a page as PDF or PNG, or crawl a site into one PDF.', 'browser-toolkit'],
+  ['Let an agent act on the desktop', 'sa agent "<goal>"', 'Claude plans mouse and keyboard actions toward a goal. No action runs until you pass --no-dry-run.', 'replay-and-tests'],
+  ['Describe a video', 'sa video-analyze <file or url>', 'Sample frames, transcribe the audio and get a written description of the video.', 'ai-analysis'],
 ];
 
 const docs = [
@@ -43,6 +45,7 @@ const docs = [
   ['platforms', 'Platforms'],
   ['privacy-and-security', 'Privacy and security'],
   ['troubleshooting', 'Troubleshooting'],
+  ['architecture', 'How it works'],
   ['limitations', 'Limitations'],
   ['contributing', 'Contributing'],
 ];

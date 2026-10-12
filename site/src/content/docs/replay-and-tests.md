@@ -148,6 +148,19 @@ sa heal -k checkout -s psr_output/psr_20240115_143000_output
 
 It exits with 0 when every test passes, and with 1 otherwise.
 
+### In CI
+
+Because of that exit code, `sa heal` can replace a plain `pytest` step. It runs pytest with the Python that runs `sa`, so install PSR.ai and pytest in the same environment as your project:
+
+```yaml
+- name: Run tests with diagnostics
+  run: |
+    pip install "psr-ai @ git+https://github.com/maioio/psr-ai.git" pytest
+    sa heal
+```
+
+To show a recorded session next to the failures, commit its output folder and pass it with `--session`. pytest is stopped after 300 seconds, and the step then fails.
+
 ## sa do
 
 ```bash

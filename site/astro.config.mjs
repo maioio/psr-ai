@@ -31,7 +31,7 @@ export default defineConfig({
         { label: 'Start', items: ['getting-started', 'recording', 'output-format'] },
         { label: 'Use with agents', items: ['mcp', 'hidden-context-layer', 'ai-analysis', 'replay-and-tests'] },
         { label: 'Reference', items: ['commands', 'browser-toolkit', 'platforms', 'privacy-and-security', 'troubleshooting'] },
-        { label: 'Project', items: ['limitations', 'contributing'] },
+        { label: 'Project', items: ['architecture', 'limitations', 'contributing'] },
       ],
     }),
   ],
