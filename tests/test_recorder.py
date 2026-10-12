@@ -507,7 +507,12 @@ class TestLinuxRecorder:
         r._step_index = 0
         r._steps = []
         (tmp_path / "screenshots").mkdir()
-        with patch("psr_ai.core.recorder.subprocess.run"):
+        # Keep which() mocked here too: on hosts with gdbus or xprop (CI runners)
+        # the window-title lookup would otherwise parse a MagicMock's stdout.
+        with (
+            patch("psr_ai.core.recorder.shutil.which", return_value=None),
+            patch("psr_ai.core.recorder.subprocess.run"),
+        ):
             r._capture_step(click_x=50, click_y=75)
         assert len(r._steps) == 1
         assert r._steps[0]["click_x"] == 50

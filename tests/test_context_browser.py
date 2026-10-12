@@ -339,6 +339,13 @@ class TestMcpContextTools:
             result = mcp._dispatch_tool("psr_open_context_browser", {})
         assert "Could not start the browser" in result
 
+    def test_open_context_browser_explains_an_unsupported_browser(self):
+        err = cb.UnsupportedBrowserError("Chrome ignores --load-extension")
+        with patch("psr_ai.core.context_browser.launch", side_effect=err):
+            result = mcp._dispatch_tool("psr_open_context_browser", {"browser": "chrome"})
+        assert "Could not open an instrumented browser" in result
+        assert "Chrome ignores --load-extension" in result
+
     def test_open_context_browser_refuses_a_flag_as_url(self):
         """The url comes from an agent; a Chromium switch there must never launch."""
         with patch.object(cb.subprocess, "Popen") as popen:

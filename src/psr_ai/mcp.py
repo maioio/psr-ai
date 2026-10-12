@@ -368,7 +368,7 @@ def _tool_psr_open_context_browser(args: dict[str, Any]) -> str:
             preferred=args.get("browser") or None,
             url=args.get("url") or None,
         )
-    except ValueError as exc:
+    except (ValueError, context_browser.UnsupportedBrowserError) as exc:
         return f"Could not open an instrumented browser: {exc}"
     except FileNotFoundError as exc:
         return (
